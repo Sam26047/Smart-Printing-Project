@@ -1,0 +1,21 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:       #env variables for our backend, eg. accessed using process.end.DB
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: 12345
+      DB_NAME: printing_db
+    depends_on:
+      - postgres
+  postgres:       #env var postgres expects 
+    image: postgres:latest
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 12345
+      POSTGRES_DB: printing_db
+    ports:
+      - "5432:5432"
