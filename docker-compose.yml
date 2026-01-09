@@ -17,5 +17,3 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: 12345
       POSTGRES_DB: printing_db
-    ports:
-      - "5432:5432"
