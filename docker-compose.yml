@@ -12,7 +12,7 @@ services:
     depends_on:
       - postgres
   postgres:       #env var postgres expects 
-    image: postgres:latest
+    image: postgres:15
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: 12345
