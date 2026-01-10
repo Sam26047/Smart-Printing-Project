@@ -20,5 +20,5 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data   #vol_name:container_path (named volume declaration)
   
-  volumes:               #this is basically variable declaration or resource definition 
-    postgres_data:       #like this project uses a volume called postgres_data
+volumes:               #this is basically variable declaration or resource definition 
+  postgres_data:       #like this project uses a volume called postgres_data
