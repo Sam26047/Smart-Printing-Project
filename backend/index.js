@@ -1,6 +1,13 @@
 import express from "express";
 import pg from "pg";
 
+const ALLOWED_STATUS_TRANSITIONS = {
+  PENDING: ["QUEUED"],
+  QUEUED: ["PRINTING"],
+  PRINTING: ["READY"],
+  READY: ["COLLECTED"],
+};
+
 const app = express();
 app.use(express.json());
 
@@ -65,6 +72,48 @@ app.get("/print-jobs",async(req,res)=>{
   }catch(err){
     console.error("DB ERROR:",err.message);
     res.status(500).json({error:"Failed to fetch print jobs"});
+  }
+});
+
+app.patch("/print-jobs/:id/status",async(req,res)=>{
+  const {id} =req.params;
+  const {status} = req.body;
+
+  if(!status){
+    return res.status(400).json({error:"Status is Required"});
+  }
+  try {
+    //1. Get current status
+    const current = await pool.query(
+      "SELECT status FROM print_jobs WHERE id = $1",
+      [id]
+    );
+    if(current.rows.length === 0){
+      return res.status(404).json({error: "Job not found"});
+    }
+
+    const currentStatus = current.rows[0].status;
+
+    //2. Validate transition
+
+    const allowedNext = ALLOWED_STATUS_TRANSITIONS[currentStatus]||[];
+
+    if(!allowedNext.includes(status)){
+      return res.status(400).json({
+        error: `Invalid transition from ${currentStatus} to ${status}`,
+      });
+    }
+
+    //3. Update status
+    await pool.query(
+      "UPDATE print_jobs SET status= $1 WHERE id = $2",
+      [status,id]
+    );
+
+    res.json({message: "Status updated successfully"});
+  }catch(err){
+    console.error("DB ERROR: ",err.message);
+    res.status(500).json({error: "Failed to update status"});
   }
 });
 
