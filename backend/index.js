@@ -120,6 +120,11 @@ app.patch("/print-jobs/:id/status",async(req,res)=>{
 app.get("/print-jobs/:id",async (req,res)=>{
   const {id} = req.params;
 
+  // ✅ UUID format validation
+  if (!isUUID(id)) {
+    return res.status(400).json({ error: "Invalid print job ID format" });
+  }
+
   try{
     const result = await pool.query(
       `
