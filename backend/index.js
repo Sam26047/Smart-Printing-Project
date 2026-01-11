@@ -42,6 +42,31 @@ app.post("/print-jobs",async(req,res)=>{
   }
 });
 
+app.get("/print-jobs",async(req,res)=>{
+  try{
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        file_name,
+        copies,
+        color,
+        double_sided,
+        status,
+        created_at
+      FROM print_jobs
+      ORDER BY created_at DESC
+      `
+    );
+
+    res.json({
+      jobs:result.rows,
+    });
+  }catch(err){
+    console.error("DB ERROR:",err.message);
+    res.status(500).json({error:"Failed to fetch print jobs"});
+  }
+});
 
 app.get("/", (req, res) => {
   res.send("Backend is alive 🚀");
