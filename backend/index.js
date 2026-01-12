@@ -60,7 +60,8 @@ app.get("/print-jobs",async(req,res)=>{
         color,
         double_sided,
         status,
-        created_at
+        created_at,
+        priority
       FROM print_jobs
       ORDER BY priority DESC, created_at ASC
       `
