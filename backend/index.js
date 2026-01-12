@@ -64,7 +64,8 @@ app.get("/print-jobs",async(req,res)=>{
         double_sided,
         status,
         created_at,
-        priority
+        priority,
+        deadline
       FROM print_jobs
       ORDER BY priority DESC, created_at ASC
       `
@@ -200,15 +201,25 @@ app.get("/", (req, res) => {
 async function printerWorker(){
   console.log("🖨️ Printer worker started");
 
-  while(true){
+  while(true){ 
     try{
       //1. Find nest job to print
-      const result = await pool.query(
+
+      //first sort by priority then assign 1 to the jobs with deadline not null so they get higher priority
+      //then sort by smallest deadline then sort by fifo for fairness using created_at
+      const result = await pool.query(  
         `
         SELECT id
         FROM print_jobs
         WHERE status = 'QUEUED'
-        ORDER BY priority DESC,created_at ASC
+        ORDER BY
+          priority DESC,
+          CASE
+            WHEN deadline IS NULL THEN 1  
+            ELSE 0
+          END,
+          deadline ASC,
+          created_at ASC
         LIMIT 1
         `
       );
