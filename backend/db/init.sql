@@ -11,3 +11,6 @@ CREATE TABLE IF NOT EXISTS print_jobs(
     status TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE print_jobs
+ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0;

@@ -62,7 +62,7 @@ app.get("/print-jobs",async(req,res)=>{
         status,
         created_at
       FROM print_jobs
-      ORDER BY created_at DESC
+      ORDER BY priority DESC, created_at ASC
       `
     );
 
@@ -150,6 +150,42 @@ app.get("/print-jobs/:id",async (req,res)=>{
   }catch(err){
     console.error("DB ERROR:",err.message);
     res.status(500).json({error:"Failed to fetch print job"});
+  }
+});
+
+app.patch("/print-jobs/:id/priority",async(req,res)=>{
+  const {id} = req.params;
+  const {priority} = req.body;
+
+  if(priority===undefined){
+    return res.status(400).json({error: "Priority is required"});
+  }
+
+  try{
+    //Ensure job is QUEUED
+    const current = await pool.query(
+      "SELECT status FROM print_jobs WHERE id = $1",[id]
+    );
+
+    if(current.rows.length===0){
+      return res.status(404).json({error: "Job not found"});
+    }
+
+    if(current.rows[0].status !=="QUEUED"){
+      return res.status(400).json({
+        error: "Only QUEUED jobs can be reordered",
+      });
+    }
+
+    await pool.query(
+      "UPDATE print_jobs SET priority = $1 WHERE id = $2",
+      [priority,id]
+    );
+
+    res.json({message: "Priority updated successfully"});
+  }catch(err){
+    console.log("DB ERROR:", err.message);
+    res.status(500).json({error: "Failed to update priority"});
   }
 });
 
