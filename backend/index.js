@@ -1,6 +1,11 @@
 import express from "express";
 import pg from "pg";
 
+//6-digit OTP for collection verification
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
 //This simulates printing time
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));   
 
@@ -243,13 +248,23 @@ async function printerWorker(){
       //3. Simulate printing time
       await sleep(5000);
 
-      //4. Mark job as READY
+      //4. Mark job as READY and generate OTP
+
+      const otp = generateOTP();
+
       await pool.query(
-        "UPDATE print_jobs SET status = 'READY' WHERE id=$1",
-        [jobId]
+        `
+        UPDATE print_jobs 
+         SET status = 'READY',
+            otp = $1,
+            otp_used = FALSE
+         WHERE id=$2
+        `,
+        [otp,jobId]
       );
 
       console.log(`✅ Job ${jobId} is READY`);
+      console.log(`🔐 OTP for job ${jobId}: ${otp}`);
 
     }catch(err){
       console.error("❌ Printer worker error:", err.message);
