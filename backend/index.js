@@ -1,6 +1,9 @@
 import express from "express";
 import pg from "pg";
 
+//This simulates printing time
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));   
+
 const ALLOWED_STATUS_TRANSITIONS = {
   PENDING: ["QUEUED"],
   QUEUED: ["PRINTING"],
@@ -193,6 +196,58 @@ app.patch("/print-jobs/:id/priority",async(req,res)=>{
 app.get("/", (req, res) => {
   res.send("Backend is alive 🚀");
 });
+
+async function printerWorker(){
+  console.log("🖨️ Printer worker started");
+
+  while(true){
+    try{
+      //1. Find nest job to print
+      const result = await pool.query(
+        `
+        SELECT id
+        FROM print_jobs
+        WHERE status = 'QUEUED'
+        ORDER BY priority DESC,created_at ASC
+        LIMIT 1
+        `
+      );
+
+      if(result.rows.length===0){
+        //No jobs-> wait and retry
+        await sleep(3000);
+        continue;
+      }
+      
+      const jobId = result.rows[0].id;
+
+      //2. Mark job as PRINTING
+      await pool.query(
+        "UPDATE print_jobs SET status = 'PRINTING' WHERE id=$1",
+        [jobId]
+      );
+
+      console.log(`🖨️ Printing job ${jobId}...`);
+
+      //3. Simulate printing time
+      await sleep(5000);
+
+      //4. Mark job as READY
+      await pool.query(
+        "UPDATE print_jobs SET status = 'READY' WHERE id=$1",
+        [jobId]
+      );
+
+      console.log(`✅ Job ${jobId} is READY`);
+
+    }catch(err){
+      console.error("❌ Printer worker error:", err.message);
+      await sleep(5000);
+    }
+  }
+}
+
+printerWorker();
 
 app.listen(5000, () => {
   console.log("Backend running on port 5000");
