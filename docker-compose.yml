@@ -11,6 +11,9 @@ services:
       DB_NAME: printing_db
     depends_on:
       - postgres
+    volumes:
+      - ./backend/uploads:/app/uploads  #uploaded file persistence, files stored in /app/uploads path of container mapped to /backend/uploads of current folder of our computer or vps
+
   postgres:       #env var postgres expects 
     image: postgres:15
     environment:
