@@ -57,33 +57,38 @@ const pool = new Pool({
   database: process.env.DB_NAME,
 })
 
-app.post("/print-jobs",async(req,res)=>{
-  const {file_name,file_path,copies,color,double_sided} = req.body;
+app.post("/print-jobs", upload.single("file"), async (req, res) => {
+    try {
+      const { copies, color, double_sided, deadline } = req.body;
 
-  //Basic Validation
-  if(!file_name || !file_path || !copies){
-    return res.status(400).json({error:"Missing required fields"});
-  }
+      if (!req.file || !copies) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
 
-  try{
-    const result = await pool.query(
-      `
+      const filePath = req.file.path;
+      const fileName = req.file.originalname;
+
+      const result = await pool.query(
+        `
         INSERT INTO print_jobs
-          (file_name,file_path,copies,color,double_sided,status)
+          (file_name, file_path, copies, color, double_sided, status, deadline)
         VALUES
-          ($1,$2,$3,$4,$5,'PENDING')
-          RETURNING id
-      `,
-      [file_name,file_path,copies,color,double_sided]
-    );
-    res.status(201).json({
-      job_id:result.rows[0].id,  //sets resource succesfully created(201) as status and returns job id to client
-    });
-  }catch(err){
-    console.error(err);
-    res.status(500).json({error:"Failed to create print job"});
+          ($1, $2, $3, $4, $5, 'PENDING', $6)
+        RETURNING id
+        `,
+        [fileName, filePath, copies, color, double_sided, deadline || null]
+      );
+
+      res.status(201).json({
+        job_id: result.rows[0].id,
+        message: "File uploaded and job created",
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Upload failed" });
+    }
   }
-});
+);
 
 app.get("/print-jobs",async(req,res)=>{
   try{
