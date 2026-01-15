@@ -9,6 +9,7 @@ function UploadForm(){
     const [color,setColor] = useState(false);
     const [doubleSided,setDoubleSided] = useState(false);
     const [jobId, setJobId] = useState(null);
+    const [error, setError] = useState(null);
 
     const handleSubmit = async (event) => {
         event.preventDefault();
