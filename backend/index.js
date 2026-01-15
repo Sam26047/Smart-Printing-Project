@@ -240,51 +240,39 @@ app.get("/", (req, res) => {
   res.send("Backend is alive 🚀");
 });
 
-app.post("/print-jobs/collect",async (req,res)=>{
+app.post("/print-jobs/:id/collect", async (req, res) => {
+  const { id } = req.params;
   const { otp } = req.body;
 
-  if(!otp){
-    return res.status(400).json({error:"OTP is required"});
+  if (!otp) {
+    return res.status(400).json({ error: "OTP is required" });
   }
 
-  try{
+  try {
     const result = await pool.query(
       `
-      SELECT id,status, otp_used
-      FROM print_jobs
-      WHERE otp = $1
-      `,
-      [otp]
-    );
-
-    if(result.rows.length === 0){
-      return res.status(400).json({error: "Invalid OTP"});
-    }
-
-    const job = result.rows[0];
-
-    if(job.otp_used){
-      return res.status(400).json({error: "OTP already used"});
-    }
-
-    if(job.status !== "READY"){
-      return res.status(400).json({error: "Job not ready for collection"});
-    }
-
-    await pool.query(
-      `
       UPDATE print_jobs
-      SET status = 'COLLECTED',
-          otp_used = TRUE
-      WHERE id = $1
+      SET
+        status = 'COLLECTED',
+        otp_used = TRUE
+      WHERE
+        id = $1
+        AND otp = $2
+        AND otp_used = FALSE
+        AND status = 'READY'
+      RETURNING id
       `,
-      [job.id]
+      [id, otp]
     );
 
-    res.json({message: "Print collected successfully"});
-  }catch(err){
-    console.error("OTP ERROR:",err.message);
-    res.status(500).json({error: "Failed to collect print job"});
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: "Invalid OTP or job not ready" });
+    }
+
+    res.json({ message: "Print job collected successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to collect print job" });
   }
 });
 
