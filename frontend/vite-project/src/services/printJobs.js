@@ -11,8 +11,8 @@ const getJobById = (id)=>{
     return axios.get(`${baseUrl}/print-jobs/${id}`);
 };
 
-const collectPrintJob = (otp)=>{
-    return axios.post(`${baseUrl}/print-jobs/collect`,{ otp }); //because this data is sent in application/json format
+const collectPrintJob = (otp,id)=>{
+    return axios.post(`${baseUrl}/print-jobs/:${id}/collect`,{ otp }); //because this data is sent in application/json format
 };                                                              //i.e as raw json object
 
 export default {

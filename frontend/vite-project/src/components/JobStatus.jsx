@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import printJobService from "../services/printJobs";
+import CollectPrint from "./CollectPrint";
 
 function JobStatus({ jobId }) {
   const [status, setStatus] = useState(null);
@@ -42,6 +43,9 @@ function JobStatus({ jobId }) {
       <h3>Job Status</h3>
       {error && <p style={{ color: "red" }}>{error}</p>}
       {status ? <p>Status: {status}</p> : <p>Loading...</p>}
+      {status === "READY" && (
+        <CollectPrint jobId={jobId} /> //if job ready ,render otp entering component
+      )}
     </div>
   );
 }
