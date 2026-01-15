@@ -4,6 +4,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import cors from "cors";
+import { validate as isUUID } from "uuid"; //validate is the function name ,we are aliasing it as isUUID
 
 const uploadDir = "./uploads";
 
