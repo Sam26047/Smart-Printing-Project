@@ -3,6 +3,7 @@ import pg from "pg";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import cors from "cors";
 
 const uploadDir = "./uploads";
 
@@ -45,6 +46,8 @@ const ALLOWED_STATUS_TRANSITIONS = {
 };
 
 const app = express();
+
+app.use(cors());
 app.use(express.json());
 
 const {Pool} = pg;
