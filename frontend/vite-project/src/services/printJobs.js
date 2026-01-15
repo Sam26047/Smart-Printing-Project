@@ -7,7 +7,7 @@ const createPrintJob = (formData)=>{
     return axios.post(`${baseUrl}/print-jobs`,formData);
 };
 
-const getJobId = (id)=>{
+const getJobById = (id)=>{
     return axios.get(`${baseUrl}/print-jobs/${id}`);
 };
 
@@ -17,6 +17,6 @@ const collectPrintJob = (otp)=>{
 
 export default {
     createPrintJob,
-    getJobId,
+    getJobById,
     collectPrintJob
 };
