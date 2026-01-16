@@ -19,7 +19,7 @@ const CollectPrint = ({jobId})=>{
     };
 
     if(message){
-        return <p>{messsage}</p>;
+        return <p>{message}</p>;
     }
 
     return (
