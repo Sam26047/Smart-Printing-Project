@@ -109,7 +109,7 @@ app.get("/print-jobs",async(req,res)=>{
         priority,
         deadline
       FROM print_jobs
-      ORDER BY priority DESC, created_at ASC
+      ORDER BY status,priority DESC, created_at ASC
       `
     );
 
