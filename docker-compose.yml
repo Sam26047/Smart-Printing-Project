@@ -9,6 +9,7 @@ services:
       DB_USER: postgres
       DB_PASSWORD: 12345
       DB_NAME: printing_db
+      JWT_SECRET: supersecretkey  #key used for jwt token signing
     depends_on:
       - postgres
     volumes:

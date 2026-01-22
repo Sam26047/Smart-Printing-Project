@@ -5,6 +5,8 @@ import path from "path";
 import fs from "fs";
 import cors from "cors";
 import { validate as isUUID } from "uuid"; //validate is the function name ,we are aliasing it as isUUID
+import bcrypt from "bcrypt";
+import { authenticate, generateToken, requireAdmin } from "./auth.js";
 
 const uploadDir = "./uploads";
 
@@ -61,6 +63,34 @@ const pool = new Pool({
   database: process.env.DB_NAME,
 })
 
+app.post("/login", async (req,res)=>{
+  const { username,password } = req.body;
+
+  const result = await pool.query(
+    "SELECT * FROM users WHERE username = $1",   //simple user lookup
+    [username]
+  );
+
+  if(result.rows.length === 0){
+    return res.status(401).json({error: "Invalid credentials"});
+  }
+
+  const user = result.rows[0];
+  const passwordOk = await bcrypt.compare(password,user.password_hash); //password check authentication
+
+  if(!passwordOk){
+    return res.status(401).json({error: "Invalid credentials"});
+  }
+
+  const token = generateToken(user); //generate token if authenticated
+
+  res.json({  //return token
+    token,
+    role: user.role,
+    username: user.username, 
+  });
+});
+
 app.post("/print-jobs", upload.single("file"), async (req, res) => {
     try {
       const { copies, color, double_sided, deadline } = req.body;
@@ -94,7 +124,7 @@ app.post("/print-jobs", upload.single("file"), async (req, res) => {
   }
 );
 
-app.get("/print-jobs",async(req,res)=>{
+app.get("/print-jobs",authenticate,requireAdmin,async(req,res)=>{
   try{
     const result = await pool.query(
       `
@@ -122,7 +152,7 @@ app.get("/print-jobs",async(req,res)=>{
   }
 });
 
-app.patch("/print-jobs/:id/status",async(req,res)=>{
+app.patch("/print-jobs/:id/status",authenticate,requireAdmin,async(req,res)=>{
   const {id} =req.params;
   const {status} = req.body;
 
@@ -200,7 +230,7 @@ app.get("/print-jobs/:id",async (req,res)=>{
   }
 });
 
-app.patch("/print-jobs/:id/priority",async(req,res)=>{
+app.patch("/print-jobs/:id/priority",authenticate,requireAdmin,async(req,res)=>{ //add token authentication and admin check middleware 
   const {id} = req.params;
   const {priority} = req.body;
 
