@@ -2,7 +2,6 @@ import { useState} from "react";
 import printJobService from "../services/printJobs";
 import JobStatus from "./JobStatus";
 
-
 function UploadForm(){
     const [file,setFile] = useState(null);
     const [copies,setCopies] = useState(1);
