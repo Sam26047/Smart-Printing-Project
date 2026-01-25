@@ -5,6 +5,8 @@ import authService from "./services/authService";
 import adminJobs from "./services/adminJobs";
 import LoginForm from "./components/LoginForm";
 import RegisterForm from "./components/RegisterForm";
+import adminUsers from "./services/adminUsers";
+import AdminUsers from "./services/adminUsers";
 
 function App(){
 
@@ -16,6 +18,7 @@ function App(){
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser);
       adminJobs.setToken(parsedUser.token); //.token means value of key token in the object
+      adminUsers.setToken(parsedUser.token);
     }
   }, []);
 
@@ -36,6 +39,7 @@ function App(){
       localStorage.setItem("loggedPrintUser",JSON.stringify(userData));
 
       adminJobs.setToken(userData.token);
+      adminUsers.setToken(userData.token);
     }catch(err){
       alert("Invalid credentials");
     }
@@ -45,8 +49,8 @@ function App(){
     localStorage.removeItem("loggedPrintUser");  //because we are not using refresh tokens so server cant explicitly logout a user, so no /logout path
     setUser(null);
     adminJobs.setToken(null);
+    adminUsers.setToken(null);
   };
-
 
   return (
     <div>
@@ -65,7 +69,12 @@ function App(){
       )}
        
       <hr />
-      {user?.role === 'ADMIN' && <AdminQueue />}
+      {user?.role === 'ADMIN' && (
+        <>
+          <AdminQueue />
+          <AdminUsers />
+        </>
+      )}
     </div>
   );
 }
