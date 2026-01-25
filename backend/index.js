@@ -91,6 +91,43 @@ app.post("/login", async (req,res)=>{
   });
 });
 
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: "username and password required" });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: "password too short" });
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const result = await pool.query(
+      `
+      INSERT INTO users (username, password_hash, role)
+      VALUES ($1, $2, 'STUDENT')
+      RETURNING id, username, role
+      `,
+      [username, passwordHash]
+    );
+
+    res.status(201).json({
+      message: "User registered successfully",
+      user: result.rows[0],
+    });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(400).json({ error: "username already exists" });
+    }
+
+    console.error("REGISTER ERROR:", err.message);
+    res.status(500).json({ error: "registration failed" });
+  }
+});
+
 app.post("/print-jobs", upload.single("file"), async (req, res) => {
     try {
       const { copies, color, double_sided, deadline } = req.body;

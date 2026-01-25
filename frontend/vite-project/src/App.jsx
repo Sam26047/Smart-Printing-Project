@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import authService from "./services/authService";
 import adminJobs from "./services/adminJobs";
 import LoginForm from "./components/LoginForm";
+import RegisterForm from "./components/RegisterForm";
 
 function App(){
 
@@ -17,6 +18,15 @@ function App(){
       adminJobs.setToken(parsedUser.token); //.token means value of key token in the object
     }
   }, []);
+
+  const handleRegister = async (credentials) => {
+    try {
+      await authService.register(credentials);
+      alert("Registration successful. Please log in.");
+    } catch (err) {
+      alert(err.response?.data?.error || "Registration failed");
+    }
+  };
 
   const handleLogin = async (credentials) =>{ //add new user,this method given to login form
     try{
@@ -41,8 +51,11 @@ function App(){
   return (
     <div>
       <h1>Smart Printing System</h1>
-      {!user ? (
-        <LoginForm onLogin={handleLogin} />  //return login form if non existing user
+      {!user ? ( //if not existing user give login and register form
+        <>  
+          <LoginForm onLogin={handleLogin} />
+          <RegisterForm onRegister={handleRegister} />
+        </>
       ) : (                                  //if existing user give pdf upload form
         <div>
           <p>Welcome {user.username}</p> 
