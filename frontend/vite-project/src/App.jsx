@@ -6,7 +6,7 @@ import adminJobs from "./services/adminJobs";
 import LoginForm from "./components/LoginForm";
 import RegisterForm from "./components/RegisterForm";
 import adminUsers from "./services/adminUsers";
-import AdminUsers from "./services/adminUsers";
+import AdminUsers from "./components/AdminUsers";
 
 function App(){
 

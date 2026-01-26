@@ -14,7 +14,7 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
 }
 
-const storage = multer.diskStorage({
+const storage = multer.diskStorage({  //format of each file object stord in disk
   destination: uploadDir,
   filename: (req, file, cb) => {
     const uniqueName = Date.now() + "-" + file.originalname;
@@ -27,8 +27,9 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     if (file.mimetype !== "application/pdf") {
       return cb(new Error("Only PDFs allowed"));
+    }else{
+      cb(null, true);
     }
-    cb(null, true);
   },
 });
 
@@ -175,38 +176,63 @@ app.patch("/users/:id/role", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-app.post("/print-jobs", upload.single("file"), async (req, res) => {
+app.post("/print-jobs", upload.array("files", 10),async (req, res) => {
     try {
       const { copies, color, double_sided, deadline } = req.body;
 
-      if (!req.file || !copies) {
-        return res.status(400).json({ error: "Missing required fields" });
+      // ✅ validation
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: "At least one PDF is required" });
       }
 
-      const filePath = req.file.path;
-      const fileName = req.file.originalname;
+      if (!copies) {
+        return res.status(400).json({ error: "Copies are required" });
+      }
 
-      const result = await pool.query(
+      // 1️⃣ create job (NO file columns anymore)
+      const jobResult = await pool.query(
         `
         INSERT INTO print_jobs
-          (file_name, file_path, copies, color, double_sided, status, deadline)
+          (copies, color, double_sided, status, deadline)
         VALUES
-          ($1, $2, $3, $4, $5, 'PENDING', $6)
+          ($1, $2, $3, 'PENDING', $4)
         RETURNING id
         `,
-        [fileName, filePath, copies, color, double_sided, deadline || null]
+        [copies, color, double_sided, deadline || null]
       );
 
+      const jobId = jobResult.rows[0].id;
+
+      // 2️⃣ insert all files
+      const insertFilesPromises = req.files.map((file) =>
+        pool.query(
+          `
+          INSERT INTO job_files
+            (job_id, file_name, file_path)
+          VALUES
+            ($1, $2, $3)
+          `,
+          [jobId, file.originalname, file.path]
+        )
+      );
+
+      await Promise.all(insertFilesPromises);  //wait until all these promises finish,
+      // i.e if all inserts succeed ->continue
+      //else throw error
+
+      // 3️⃣ response
       res.status(201).json({
-        job_id: result.rows[0].id,
-        message: "File uploaded and job created",
+        job_id: jobId,
+        file_count: req.files.length,
+        message: "Files uploaded and job created",
       });
     } catch (err) {
-      console.error(err);
+      console.error("UPLOAD ERROR:", err.message);
       res.status(500).json({ error: "Upload failed" });
     }
   }
 );
+
 
 app.get("/print-jobs",authenticate,requireAdmin,async(req,res)=>{
   try{
