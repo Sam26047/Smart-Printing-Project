@@ -3,7 +3,7 @@ import printJobService from "../services/printJobs";
 import JobStatus from "./JobStatus";
 
 function UploadForm(){
-    const [file,setFile] = useState(null);
+    const [files,setFiles] = useState([]);
     const [copies,setCopies] = useState(1);
     const [color,setColor] = useState(false);
     const [doubleSided,setDoubleSided] = useState(false);
@@ -14,13 +14,15 @@ function UploadForm(){
         event.preventDefault();
         setError(null);
 
-        if(!file){
+        if(!files){
             setError("Please select a PDF file");
             return;
         }
 
         const formData = new FormData(); //FormData is a browser provided class that lets js build a multipart/form-data request
-        formData.append("file",file);
+        files.forEach((file) => {
+            formData.append("files", file); //append each file
+        });
         formData.append("copies",copies);
         formData.append("color",color);
         formData.append("double_sided",doubleSided);
@@ -40,12 +42,20 @@ function UploadForm(){
             <form onSubmit={handleSubmit}>
                 <div>
                     <input
-                        type="file"
-                        accept="application/pdf"
-                        onChange={(event)=>setFile(event.target.files[0])}
+                    type="file"
+                    multiple
+                    accept="application/pdf" //add multiple files
+                    onChange={(e) => setFiles(Array.from(e.target.files))}
                     />
                 </div>
-
+                
+                {files.length > 0 && ( //show selected files list on UI
+                <ul>
+                    {files.map((file, index) => (
+                    <li key={index}>{file.name}</li>
+                    ))}
+                </ul>
+                )}
                 <div>
                     Copies:
                     <input 

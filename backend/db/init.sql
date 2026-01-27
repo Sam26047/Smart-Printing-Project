@@ -29,3 +29,15 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK (role IN ('STUDENT', 'ADMIN')),
   created_at TIMESTAMP DEFAULT now()
 );
+
+CREATE TABLE job_files (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  job_id UUID NOT NULL REFERENCES print_jobs(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT now()
+);
+
+ALTER TABLE print_jobs
+DROP COLUMN IF EXISTS file_name,
+DROP COLUMN IF EXISTS file_path;
