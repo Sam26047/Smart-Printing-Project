@@ -240,7 +240,6 @@ app.get("/print-jobs",authenticate,requireAdmin,async(req,res)=>{
       `
       SELECT
         id,
-        file_name,
         copies,
         color,
         double_sided,
@@ -317,7 +316,6 @@ app.get("/print-jobs/:id",async (req,res)=>{
       `
       SELECT
         id,
-        file_name,
         copies,
         color,
         double_sided,
