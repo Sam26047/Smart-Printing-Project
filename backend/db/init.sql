@@ -40,4 +40,13 @@ CREATE TABLE job_files (
 
 ALTER TABLE print_jobs
 DROP COLUMN IF EXISTS file_name,
-DROP COLUMN IF EXISTS file_path;
+DROP COLUMN IF EXISTS file_path;   --link path and name to job-files and instead of jobs
+
+ALTER TABLE print_jobs  
+ADD COLUMN user_id UUID;  --connect users to jobs for job history
+
+ALTER TABLE print_jobs
+ADD CONSTRAINT print_jobs_user_fk  --added foreign key to associate user and jobs
+FOREIGN KEY (user_id)
+REFERENCES users(id)
+ON DELETE SET NULL; --jobs history remain even if user deletec

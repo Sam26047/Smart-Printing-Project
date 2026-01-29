@@ -176,10 +176,56 @@ app.patch("/users/:id/role", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-app.post("/print-jobs", upload.array("files", 10),async (req, res) => {
+app.get( "/users/me/jobs", authenticate,async (req, res) => { 
+    try {
+      const userId = req.user.id;
+
+      // 1️⃣ read query param
+      const activeOnly = req.query.active === "true";
+
+      // 2️⃣ choose SQL
+      const query = activeOnly
+        ? `
+          SELECT
+            id,
+            status,
+            priority,
+            deadline,
+            created_at
+          FROM print_jobs
+          WHERE user_id = $1
+            AND status NOT IN ('COLLECTED')
+          ORDER BY created_at DESC
+        `
+        : `
+          SELECT
+            id,
+            status,
+            priority,
+            deadline,
+            created_at
+          FROM print_jobs
+          WHERE user_id = $1
+          ORDER BY created_at DESC
+        `;
+
+      // 3️⃣ EXECUTE query
+      const result = await pool.query(query, [userId]);
+
+      // 4️⃣ return data
+      res.json({ jobs: result.rows });
+    } catch (err) {
+      console.error("FETCH USER JOBS ERROR:", err.message);
+      res.status(500).json({ error: "Failed to fetch job history" });
+    }
+  }
+);
+
+
+app.post("/print-jobs", authenticate, upload.array("files", 10),async (req, res) => { //only logged in users can create jobs now 
     try {
       const { copies, color, double_sided, deadline } = req.body;
-
+      const userId = req.user.id;
       // ✅ validation
       if (!req.files || req.files.length === 0) {
         return res.status(400).json({ error: "At least one PDF is required" });
@@ -193,12 +239,12 @@ app.post("/print-jobs", upload.array("files", 10),async (req, res) => {
       const jobResult = await pool.query(
         `
         INSERT INTO print_jobs
-          (copies, color, double_sided, status, deadline)
+          (user_id,copies, color, double_sided, status, deadline)
         VALUES
-          ($1, $2, $3, 'PENDING', $4)
+          ($1, $2, $3, $4, 'PENDING', $5)
         RETURNING id
         `,
-        [copies, color, double_sided, deadline || null]
+        [userId, copies, color, double_sided, deadline || null]
       );
 
       const jobId = jobResult.rows[0].id;
