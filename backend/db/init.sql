@@ -50,3 +50,7 @@ ADD CONSTRAINT print_jobs_user_fk  --added foreign key to associate user and job
 FOREIGN KEY (user_id)
 REFERENCES users(id)
 ON DELETE SET NULL; --jobs history remain even if user deletec
+
+ALTER TABLE print_jobs
+DROP COLUMN otp,
+DROP COLUMN otp_used;

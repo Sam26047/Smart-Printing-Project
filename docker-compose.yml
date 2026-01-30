@@ -25,5 +25,9 @@ services:
       - postgres_data:/var/lib/postgresql/data   #vol_name:container_path (named volume declaration)
       - ./backend/db:/docker-entrypoint-initdb.d  #dockers postgrees img runs the files in /docker-entrypoint-initdb.d aitomatically when db is first created
                                                   #so init.sql will be stored there
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
 volumes:               #this is basically variable declaration or resource definition 
   postgres_data:       #like this project uses a volume called postgres_data
