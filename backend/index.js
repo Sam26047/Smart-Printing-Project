@@ -300,6 +300,44 @@ app.post("/print-jobs", authenticate, upload.array("files", 10),async (req, res)
   }
 );
 
+app.post("/print-jobs/:id/regenerate-otp",authenticate,async (req,res)=>{
+  const {id} = req.params;
+
+  try{
+    //check job exists and is READY
+    const result = await pool.query(
+      `
+      SELECT id,status
+      FROM print_jobs
+      WHERE id = $1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0){
+      return res.status(404).json({error: "Job not found"});
+    }
+
+    if(result.rows[0].status != "READY"){
+      return res
+        .status(400)
+        .json({error: "OTP can only be regenerated for READY jobs"});
+    }
+
+    // Generate new OTP
+    const otp = Math.floor(100000 + Math.random()*900000).toString();
+
+    await redisClient.setEx(`job:${id}:otp`,600,otp);
+
+    console.log(`Regenerated OTP for job ${id}: ${otp}`);
+
+    res.json({ message: "OTP regenerated successfully"});
+  }catch(err){
+    console.error("OTP REGEN ERROR: ",err.message);
+    res.status(500).json({ error: "Failed to regenerate OTP"});
+  }
+});
+
 
 app.get("/print-jobs",authenticate,requireAdmin,async(req,res)=>{
   try{
@@ -479,7 +517,7 @@ app.post("/print-jobs/:id/collect", authenticate,async (req, res) => {
 
     await redisClient.del(`job:${jobId}:otp`);
     await redisClient.del(`user:${req.user.id}:activeJob`);
-    
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to collect print job" });

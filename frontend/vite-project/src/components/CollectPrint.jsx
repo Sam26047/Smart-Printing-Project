@@ -13,8 +13,19 @@ const CollectPrint = ({jobId})=>{
         try{
             await printJobService.collectPrintJob(otp,jobId);
             setMessage("Print collected successfully");
+            clearActiveJob(); //clear activeJobId state variable
         }catch(err){
             setError("Invalid OTP or job not ready");
+        }
+    };
+
+    const regenerateOtp = async ()=>{
+        try{
+            await printJobService.regenerateOtp(jobId);
+            setMessage("New OTP generated. Check kiosk.");
+            setError(null);
+        }catch{
+            setError("Failed to regenerate OTP");
         }
     };
 
@@ -23,16 +34,19 @@ const CollectPrint = ({jobId})=>{
     }
 
     return (
-        <form onSubmit = {handleCollect}>
-            <h3>Collect Print</h3>
-            <input 
-                value={otp}
-                onChange={(event)=>setOtp(event.target.value)}
-                placeholder="Enter OTP"
-            />
-            <button type="submit">Collect</button>
-            {error && <p style={{color:"red"}}>{error}</p>}
-        </form>
+        <div>
+        <input
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+            placeholder="Enter OTP"
+        />
+        <button onClick={handleCollect}>Collect</button>
+        <button onClick={regenerateOtp}>Resend OTP</button>
+
+        {message && <p>{message}</p>}
+        {error && <p style={{ color: "red" }}>{error}</p>}
+        </div>
+        
     );
 };
 

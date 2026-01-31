@@ -93,7 +93,6 @@ function UploadForm(){
             </form>
             {jobId && <p>Job created successfully. Job ID: {jobId}</p>}
             {error && <p style={{ color: "red" }}>{error}</p>}
-            {jobId && <JobStatus jobId={jobId} />}
         </div>
     );
 }

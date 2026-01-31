@@ -7,10 +7,13 @@ import LoginForm from "./components/LoginForm";
 import RegisterForm from "./components/RegisterForm";
 import adminUsers from "./services/adminUsers";
 import AdminUsers from "./components/AdminUsers";
+import sessionService from "./services/sessionService";
+import JobStatus from "./components/JobStatus";
 
 function App(){
 
   const [user, setUser] = useState(null);
+  const [activeJobId, setActiveJobId] = useState(null);
 
   useEffect(() => { //restore login on every refresh,checks if user already exists
     const savedUser = localStorage.getItem("loggedPrintUser");
@@ -21,6 +24,18 @@ function App(){
       adminUsers.setToken(parsedUser.token);
     }
   }, []);
+
+  useEffect(()=>{
+    if(!user) return;
+
+    sessionService.setToken(user.token);
+
+    sessionService.getActivejob().then((res)=>{
+      if(res.jobId){
+        setActiveJobId(res.jobId);
+      }
+    });
+  },[user]);
 
   const handleRegister = async (credentials) => {
     try {
@@ -65,6 +80,7 @@ function App(){
           <p>Welcome {user.username}</p> 
           <UploadForm />
           <button onClick={logout}>Logout</button>
+          {activeJobId && <JobStatus jobId={activeJobId} clearActiveJob={() => setActiveJobId(null)}/>}
         </div>
       )}
        
