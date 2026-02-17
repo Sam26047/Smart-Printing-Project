@@ -1,6 +1,7 @@
 import axios from "axios";
 
-const baseUrl = "http://38.242.129.188:5000";
+// const baseUrl = "http://38.242.129.188:5000";
+const baseUrl = "http://localhost:5000";
 
 let token = null;
 

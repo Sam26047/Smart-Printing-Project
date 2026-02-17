@@ -9,6 +9,7 @@ import adminUsers from "./services/adminUsers";
 import AdminUsers from "./components/AdminUsers";
 import sessionService from "./services/sessionService";
 import JobStatus from "./components/JobStatus";
+import printJobs from "./services/printJobs";
 
 function App(){
 
@@ -22,6 +23,9 @@ function App(){
       setUser(parsedUser);
       adminJobs.setToken(parsedUser.token); //.token means value of key token in the object
       adminUsers.setToken(parsedUser.token);
+      
+      
+      printJobs.setToken(parsedUser.token);
     }
   }, []);
 
@@ -55,6 +59,7 @@ function App(){
 
       adminJobs.setToken(userData.token);
       adminUsers.setToken(userData.token);
+      printJobs.setToken(userData.token);
     }catch(err){
       alert("Invalid credentials");
     }
@@ -65,6 +70,7 @@ function App(){
     setUser(null);
     adminJobs.setToken(null);
     adminUsers.setToken(null);
+    printJobs.setToken(null);
   };
 
   return (

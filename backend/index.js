@@ -36,7 +36,7 @@ const upload = multer({
 
 
 //6-digit OTP for collection verification
-async function generateOTP() {
+async function generateOTP(jobId) {
   const otp= Math.floor(100000 + Math.random() * 900000).toString();
 
   await redisClient.setEx(
@@ -237,7 +237,7 @@ app.get("/users/me/active-job", authenticate,async (req, res) => {
   }
 );
 
-app.post("/print-jobs", authenticate, upload.array("files", 10),async (req, res) => { //only logged in users can create jobs now 
+app.post("/print-jobs", authenticate, upload.array("files", 10),async (req, res) => { //only logged in users can create jobs now  
     try {
       const { copies, color, double_sided, deadline } = req.body;
       const userId = req.user.id;
@@ -486,6 +486,7 @@ app.get("/", (req, res) => {
 app.post("/print-jobs/:id/collect", authenticate,async (req, res) => {
 
   const { otp } = req.body;
+  const jobId = req.params.id;
 
   if (!otp) {
     return res.status(400).json({ error: "OTP is required" });
@@ -504,8 +505,9 @@ app.post("/print-jobs/:id/collect", authenticate,async (req, res) => {
       UPDATE print_jobs
       SET status = 'COLLECTED'
       WHERE id = $1 AND status = 'READY'
+      RETURNING *
       `,
-      [id]
+      [jobId]
     );
 
 
@@ -571,7 +573,7 @@ async function printerWorker(){
 
       //4. Mark job as READY and generate OTP
 
-      const otp = generateOTP();
+      const otp = generateOTP(jobId);
 
       await pool.query(
         `
