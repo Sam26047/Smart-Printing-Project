@@ -3,7 +3,8 @@ import axios from "axios";
 
 // const baseURL = "http://38.242.129.188:5000";
 //latest env var after jwt implementation
-const baseURL = "http://localhost:5000";
+// const baseURL = "http://localhost:5000";
+const baseURL = "http://80.225.238.21:5000";
 
 const apiClient = axios.create({
   baseURL,
