@@ -15,6 +15,13 @@ services:
     volumes:
       - ./backend/uploads:/app/uploads  #uploaded file persistence, files stored in /app/uploads path of container mapped to /backend/uploads of current folder of our computer or vps
 
+  frontend:
+    build: ./frontend #dockerfile location
+    ports:
+      - "80:80" #Map port 80 of the container to port 80 of the server. So when someone visits http://YOUR_IP (port 80 is default for HTTP), they hit nginx which serves your React app
+    depends_on:
+      - backend #start backend container before frontend to ensure api is available when frontend starts
+
   postgres:       #env var postgres expects 
     image: postgres:15
     environment:
