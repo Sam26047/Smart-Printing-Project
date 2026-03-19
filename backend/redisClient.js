@@ -1,7 +1,7 @@
 import { createClient } from "redis";
 
 const redisUrl =
-  "redis://redis:6379"; //docker service name
+  process.env.REDIS_URL; //docker service name
 
 const redisClient = createClient({ url: redisUrl });
 

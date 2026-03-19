@@ -5,7 +5,7 @@ services:
       - "5000:5000"
     env_file:
       - .env #load en var from .env file
-    environment:       #env variables for our backend, eg. accessed using process.end.DB
+    environment:       #env variables for our backend, eg. accessed using process.env.DB
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       DB_USER: ${DB_USER}
