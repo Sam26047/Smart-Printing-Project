@@ -12,3 +12,6 @@ backend/uploads/
 
 # Build output
 frontend/dist/
+
+.env.development
+.env.production

@@ -1,4 +1,4 @@
-// frontend/vite-project/src/context/AuthContext.jsx
+// frontend/src/context/AuthContext.jsx
 import { createContext, useState, useEffect } from "react";
 import authService from "../services/authService";
 import { setAuthToken } from "../services/apiClient";
@@ -14,6 +14,8 @@ export const AuthContext = createContext(); // Creates the "channel" other compo
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [activeJobId, setActiveJobId] = useState(null);
+
+  const setActiveJob = (id) => setActiveJobId(id);
 
   // Restore login on every refresh, checks if user already exists
   useEffect(() => {
@@ -82,6 +84,7 @@ export function AuthProvider({ children }) {
         handleLogin,
         logout,
         clearActiveJob,
+        setActiveJob,
       }} 
       //children here means "whatever is wrapped inside <AuthProvider>". So in main.jsx, you'd wrap your whole app:
     >

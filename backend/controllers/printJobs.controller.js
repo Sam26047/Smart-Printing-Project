@@ -249,13 +249,14 @@ export const collectPrintJob = async (req, res) => {
     return res.status(400).json({ error: "OTP is required" });
   }
 
-  const redisOtp = await redisClient.get(`job:${jobId}:otp`);
-
-  if (!redisOtp || redisOtp !== otp) {
-    return res.status(400).json({ error: "Invalid or expired OTP" });
-  }
-
   try {
+
+    const redisOtp = await redisClient.get(`job:${jobId}:otp`);
+
+    if (!redisOtp || redisOtp !== otp) {
+      return res.status(400).json({ error: "Invalid or expired OTP" });
+    }
+    
     const result = await pool.query(
       `
       UPDATE print_jobs

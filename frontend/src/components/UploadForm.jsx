@@ -1,5 +1,6 @@
 import { useState} from "react";
 import printJobService from "../services/printJobs";
+import { useAuth } from "../hooks/useAuth";
 
 function UploadForm(){
     const [files,setFiles] = useState([]);
@@ -8,6 +9,8 @@ function UploadForm(){
     const [doubleSided,setDoubleSided] = useState(false);
     const [jobId, setJobId] = useState(null);
     const [error, setError] = useState(null);
+
+    const { setActiveJob } = useAuth();
 
     const handleSubmit = async (event) => {
         event.preventDefault();
@@ -29,6 +32,7 @@ function UploadForm(){
         try{
             const response = await printJobService.createPrintJob(formData);
             setJobId(response.data.job_id);
+            setActiveJob(response.data.job_id); //set active job in global context, so that JobStatus component can access it and start polling for status
         }catch(err){
             setError("Upload failed");
         }
@@ -59,7 +63,7 @@ function UploadForm(){
                     Copies:
                     <input 
                         type="number"
-                        values={copies}
+                        value={copies}
                         min="1"
                         onChange={(event)=>setCopies(event.target.value)}
                     />

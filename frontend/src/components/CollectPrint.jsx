@@ -1,7 +1,7 @@
 import {useState} from "react";
 import printJobService from "../services/printJobs";
 
-const CollectPrint = ({jobId})=>{
+const CollectPrint = ({jobId,clearActiveJob})=>{
     const [otp,setOtp] = useState("");
     const [message,setMessage] = useState(null);
     const [error,setError] = useState(null);
