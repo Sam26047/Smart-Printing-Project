@@ -15,5 +15,7 @@ FROM nginx:alpine
 #Copy the built files from the first stage into nginx's serving folder. Nginx will serve whatever is in /usr/share/nginx/html.
 COPY --from=build /app/dist /usr/share/nginx/html
 
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
 #tell docker this container will listen on port 80 (standard port for http, the default port for nginx listening)
 EXPOSE 80
