@@ -54,3 +54,5 @@ ON DELETE SET NULL; --jobs history remain even if user deletec
 ALTER TABLE print_jobs
 DROP COLUMN otp,
 DROP COLUMN otp_used;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT UNIQUE;

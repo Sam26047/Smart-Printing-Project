@@ -8,7 +8,7 @@ export const login = async (req, res) => {
 
   try {
     const result = await pool.query(
-      "SELECT * FROM users WHERE username = $1", //simple user lookup
+      "SELECT * FROM users WHERE username = $1",
       [username]
     );
 
@@ -17,15 +17,15 @@ export const login = async (req, res) => {
     }
 
     const user = result.rows[0];
-    const passwordOk = await bcrypt.compare(password, user.password_hash); //password check authentication
+    const passwordOk = await bcrypt.compare(password, user.password_hash);
 
     if (!passwordOk) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    const token = generateToken(user);//generate token if authenticated
+    const token = generateToken(user);
 
-    res.json({ //return token
+    res.json({
       token,
       role: user.role,
       username: user.username,
@@ -37,14 +37,19 @@ export const login = async (req, res) => {
 };
 
 export const register = async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, email } = req.body; // added email
 
-  if (!username || !password) {
-    return res.status(400).json({ error: "username and password required" });
+  if (!username || !password || !email) {
+    return res.status(400).json({ error: "username, password and email required" });
   }
 
   if (password.length < 6) {
     return res.status(400).json({ error: "password too short" });
+  }
+
+  // basic email format check
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: "invalid email address" });
   }
 
   try {
@@ -52,11 +57,11 @@ export const register = async (req, res) => {
 
     const result = await pool.query(
       `
-      INSERT INTO users (username, password_hash, role)
-      VALUES ($1, $2, 'STUDENT')
-      RETURNING id, username, role
+      INSERT INTO users (username, password_hash, email, role)
+      VALUES ($1, $2, $3, 'STUDENT')
+      RETURNING id, username, email, role
       `,
-      [username, passwordHash]
+      [username, passwordHash, email]
     );
 
     res.status(201).json({
@@ -65,6 +70,11 @@ export const register = async (req, res) => {
     });
   } catch (err) {
     if (err.code === "23505") {
+      // unique violation — could be username or email
+      const detail = err.detail || "";
+      if (detail.includes("email")) {
+        return res.status(400).json({ error: "email already registered" });
+      }
       return res.status(400).json({ error: "username already exists" });
     }
 

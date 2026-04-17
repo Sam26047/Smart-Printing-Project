@@ -1,11 +1,9 @@
 // frontend/src/services/sessionService.js
 import apiClient from "./apiClient";
 
-const getActiveJob = async () => {
+const getActiveJobs = async () => {
   const response = await apiClient.get("/users/me/active-job");
-  return response.data;
+  return response.data; // { jobIds: [...] }
 };
 
-export default {
-  getActiveJob,
-};
+export default { getActiveJobs };

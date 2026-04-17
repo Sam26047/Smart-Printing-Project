@@ -1,11 +1,34 @@
 // backend/controllers/printJobs.controller.js
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
+import { sendOTPEmail } from "../services/emailService.js";
 
-// Helper function for OTP generation
+// Helper function for OTP generation — now also emails the user
 async function generateOTP(jobId) {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   await redisClient.setEx(`job:${jobId}:otp`, 600, otp);
+
+  // Look up the user's email from the job and send OTP
+  try {
+    const result = await pool.query(
+      `SELECT u.email FROM print_jobs j
+       JOIN users u ON j.user_id = u.id
+       WHERE j.id = $1`,
+      [jobId]
+    );
+    if (result.rows.length > 0 && result.rows[0].email) {
+      await sendOTPEmail(result.rows[0].email, otp, jobId);
+      console.log(`📧 OTP emailed to ${result.rows[0].email} for job ${jobId}`);
+    } else {
+      // fallback: still log to terminal if no email on file
+      console.log(`🔐 OTP for job ${jobId}: ${otp} (no email on file)`);
+    }
+  } catch (emailErr) {
+    // Don't fail the whole flow if email fails — log and move on
+    console.error("EMAIL SEND ERROR:", emailErr.message);
+    console.log(`🔐 OTP for job ${jobId}: ${otp} (email failed, logged here)`);
+  }
+
   return otp;
 }
 
@@ -41,6 +64,7 @@ export const createPrintJob = async (req, res) => {
   try {
     const { copies, color, double_sided, deadline } = req.body;
     const userId = req.user.id;
+
     // ✅ validation
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: "At least one PDF is required" });
@@ -64,11 +88,11 @@ export const createPrintJob = async (req, res) => {
 
     const jobId = jobResult.rows[0].id;
 
-    await redisClient.set(`user:${userId}:activeJob`,  //key
-      jobId       //value
-    );
+    // ✅ Use a Redis Set so multiple jobs can be active at once
+    // sAdd adds jobId into the set — if set doesn't exist, Redis creates it
+    await redisClient.sAdd(`user:${userId}:activeJobs`, jobId); //key, value
 
-    // Insert all files
+    // 2️⃣ Insert all files
     const insertFilesPromises = req.files.map((file) =>
       pool.query(
         `
@@ -81,9 +105,9 @@ export const createPrintJob = async (req, res) => {
       )
     );
 
-    await Promise.all(insertFilesPromises);//wait until all these promises finish,
-      // i.e if all inserts succeed ->continue
-      //else throw error
+    await Promise.all(insertFilesPromises); //wait until all these promises finish,
+    // i.e if all inserts succeed ->continue
+    //else throw error
 
     // 3️⃣ response
     res.status(201).json({
@@ -150,7 +174,8 @@ export const updateJobStatus = async (req, res) => {
     if (current.rows.length === 0) {
       return res.status(404).json({ error: "Job not found" });
     }
-     //2. Validate transition
+
+    //2. Validate transition
     const currentStatus = current.rows[0].status;
     const allowedNext = ALLOWED_STATUS_TRANSITIONS[currentStatus] || [];
 
@@ -226,15 +251,11 @@ export const regenerateOtp = async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Job not found or not READY" });
     }
-    // Generate new OTP
-    const otp = await generateOTP(id);
 
-    console.log(`🔄 OTP regenerated for job ${id}: ${otp}`);
+    // Generate new OTP — emails user automatically now
+    await generateOTP(id);
 
-    res.json({
-      message: "OTP regenerated",
-      otp,
-    });
+    res.json({ message: "OTP regenerated and sent to your email" });
   } catch (err) {
     console.error("REGENERATE OTP ERROR:", err.message);
     res.status(500).json({ error: "Failed to regenerate OTP" });
@@ -249,20 +270,19 @@ export const collectPrintJob = async (req, res) => {
     return res.status(400).json({ error: "OTP is required" });
   }
 
+  const redisOtp = await redisClient.get(`job:${jobId}:otp`);
+
+  if (!redisOtp || redisOtp !== otp) {
+    return res.status(400).json({ error: "Invalid or expired OTP" });
+  }
+
   try {
-
-    const redisOtp = await redisClient.get(`job:${jobId}:otp`);
-
-    if (!redisOtp || redisOtp !== otp) {
-      return res.status(400).json({ error: "Invalid or expired OTP" });
-    }
-    
     const result = await pool.query(
       `
       UPDATE print_jobs
       SET status = 'COLLECTED'
       WHERE id = $1 AND status = 'READY'
-      RETURNING *
+      RETURNING user_id
       `,
       [jobId]
     );
@@ -271,10 +291,15 @@ export const collectPrintJob = async (req, res) => {
       return res.status(400).json({ error: "Invalid OTP or job not ready" });
     }
 
+    const userId = result.rows[0].user_id;
+
     res.json({ message: "Print job collected successfully" });
 
+    // Cleanup: remove OTP and remove this specific job from the user's active set
     await redisClient.del(`job:${jobId}:otp`);
-    await redisClient.del(`user:${req.user.id}:activeJob`);
+    if (userId) {
+      await redisClient.sRem(`user:${userId}:activeJobs`, jobId); // ✅ remove only this job from Set
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to collect print job" });

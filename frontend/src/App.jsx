@@ -5,15 +5,17 @@ import LoginForm from "./components/LoginForm";
 import RegisterForm from "./components/RegisterForm";
 import AdminUsers from "./components/AdminUsers";
 import JobStatus from "./components/JobStatus";
+import JobHistory from "./components/JobHistory";
 import { useAuth } from "./hooks/useAuth";
 
 function App() {
-  const { user, activeJobId, handleRegister, handleLogin, logout, clearActiveJob } = useAuth(); //custom hook function that developers make for auth
+  const { user, activeJobIds, handleRegister, handleLogin, logout } = useAuth();
+  //custom hook function that developers make for auth
 
   return (
     <div>
       <h1>Smart Printing System</h1>
-      {!user ? ( //if not existing user give login and register form
+      {!user ? (//if not existing user give login and register form
         <>
           <LoginForm onLogin={handleLogin} />
           <RegisterForm onRegister={handleRegister} />
@@ -21,17 +23,23 @@ function App() {
       ) : ( //if existing user give pdf upload form
         <div>
           <p>Welcome {user.username}</p>
-          <UploadForm />
           <button onClick={logout}>Logout</button>
-          {activeJobId && (
-            <JobStatus jobId={activeJobId} clearActiveJob={clearActiveJob} />
-          )}
+
+          <UploadForm />
+
+          {/* ✅ Render a JobStatus card for each active job */}
+          {activeJobIds.map((jobId) => (
+            <JobStatus key={jobId} jobId={jobId} />
+          ))}
+
+          <hr />
+          <JobHistory />
         </div>
       )}
 
-      <hr />
       {user?.role === "ADMIN" && (
         <>
+          <hr />
           <AdminQueue />
           <AdminUsers />
         </>

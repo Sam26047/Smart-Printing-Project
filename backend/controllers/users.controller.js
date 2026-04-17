@@ -5,13 +5,8 @@ import redisClient from "../redisClient.js";
 export const getAllUsers = async (req, res) => {
   try {
     const result = await pool.query(
-      `
-      SELECT id, username, role
-      FROM users
-      ORDER BY username
-      `
+      `SELECT id, username, role, email FROM users ORDER BY username`
     );
-
     res.json(result.rows);
   } catch (err) {
     console.error("FETCH USERS ERROR:", err.message);
@@ -29,19 +24,13 @@ export const updateUserRole = async (req, res) => {
 
   try {
     const result = await pool.query(
-      `
-      UPDATE users
-      SET role = $1
-      WHERE id = $2
-      RETURNING id, username, role
-      `,
+      `UPDATE users SET role = $1 WHERE id = $2
+       RETURNING id, username, role`,
       [role, id]
     );
-
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "User not found" });
     }
-
     res.json(result.rows[0]);
   } catch (err) {
     console.error("ROLE UPDATE ERROR:", err.message);
@@ -52,34 +41,16 @@ export const updateUserRole = async (req, res) => {
 export const getUserJobs = async (req, res) => {
   try {
     const userId = req.user.id;
-    // read query param
     const activeOnly = req.query.active === "true";
     // 2️⃣ choose SQL
     const query = activeOnly
-      ? `
-        SELECT
-          id,
-          status,
-          priority,
-          deadline,
-          created_at
-        FROM print_jobs
-        WHERE user_id = $1
-          AND status NOT IN ('COLLECTED')
-        ORDER BY created_at DESC
-      `
-      : `
-        SELECT
-          id,
-          status,
-          priority,
-          deadline,
-          created_at
-        FROM print_jobs
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-      `;
-
+      ? `SELECT id, status, priority, deadline, created_at
+         FROM print_jobs WHERE user_id = $1 AND status NOT IN ('COLLECTED')
+         ORDER BY created_at DESC`
+      : `SELECT id, status, priority, deadline, created_at
+         FROM print_jobs WHERE user_id = $1
+         ORDER BY created_at DESC`;
+    
     // 3️⃣ EXECUTE query
     const result = await pool.query(query, [userId]);
     // 4️⃣ return data
@@ -91,6 +62,7 @@ export const getUserJobs = async (req, res) => {
 };
 
 export const getActiveJob = async (req, res) => {
-  const jobId = await redisClient.get(`user:${req.user.id}:activeJob`);
-  res.json({ jobId });
+  // ✅ Returns array of active job IDs from the Redis Set
+  const jobIds = await redisClient.sMembers(`user:${req.user.id}:activeJobs`);
+  res.json({ jobIds }); // changed from jobId to jobIds (array)
 };
