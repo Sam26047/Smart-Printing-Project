@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import apiClient from "../services/apiClient";
+import { useAuth } from "../hooks/useAuth";
 
 function JobHistory() {
+  const { historyVersion } = useAuth(); //to keep job history updated after a job collected
   const [jobs, setJobs] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -17,7 +19,7 @@ function JobHistory() {
         setError("Failed to load job history");
         setLoading(false);
       });
-  }, []);
+  }, [historyVersion]);
 
   if (loading) return <p>Loading history...</p>;
   if (error) return <p style={{ color: "red" }}>{error}</p>;

@@ -1,12 +1,35 @@
 // backend/worker.js
 import pool from "./db/pool.js";
 import redisClient from "./redisClient.js";
+import { sendOTPEmail } from "./services/emailService.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function generateOTP(jobId) {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   await redisClient.setEx(`job:${jobId}:otp`, 600, otp);
+
+    // Look up the user's email from the job and send OTP
+  try {
+    const result = await pool.query(
+      `SELECT u.email FROM print_jobs j
+       JOIN users u ON j.user_id = u.id
+       WHERE j.id = $1`,
+      [jobId]
+    );
+    if (result.rows.length > 0 && result.rows[0].email) {
+      await sendOTPEmail(result.rows[0].email, otp, jobId);
+      console.log(`📧 OTP emailed to ${result.rows[0].email} for job ${jobId}`);
+    } else {
+      // fallback: still log to terminal if no email on file
+      console.log(`🔐 OTP for job ${jobId}: ${otp} (no email on file)`);
+    }
+  } catch (emailErr) {
+    // Don't fail the whole flow if email fails — log and move on
+    console.error("EMAIL SEND ERROR:", emailErr.message);
+    console.log(`🔐 OTP for job ${jobId}: ${otp} (email failed, logged here)`);
+  }
+
   return otp;
 }
 

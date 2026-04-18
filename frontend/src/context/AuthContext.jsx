@@ -11,6 +11,7 @@ export const AuthContext = createContext(); // Creates the "channel" other compo
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [activeJobIds, setActiveJobIds] = useState([]); // ✅ now an array — multiple jobs can be live at once
+  const [historyVersion, setHistoryVersion] = useState(0);
 
   // Restore login on every refresh, checks if user already exists
   useEffect(() => {
@@ -71,6 +72,7 @@ export function AuthProvider({ children }) {
   // Called when a job is collected — removes only that job from the list
   const removeActiveJob = (jobId) => {
     setActiveJobIds((prev) => prev.filter((id) => id !== jobId));
+    setHistoryVersion((v) => v + 1); // ✅ bump this to signal job history needs refresh
   };
 
   //The AuthProvider component wraps your whole app and holds the state (user, activeJobIds) and all the functions (handleLogin, logout, etc.). It then broadcasts all of this through AuthContext.Provider:
@@ -80,6 +82,7 @@ export function AuthProvider({ children }) {
       value={{
         user,
         activeJobIds,
+        historyVersion,
         handleRegister,
         handleLogin,
         logout,
