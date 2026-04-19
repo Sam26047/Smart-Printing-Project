@@ -8,8 +8,23 @@ function UploadForm() {
   const [copies, setCopies] = useState(1);
   const [color, setColor] = useState(false);
   const [doubleSided, setDoubleSided] = useState(false);
+  const [deadline, setDeadline] = useState("");
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+
+  // Returns true if deadline is less than 30 minutes from now
+  const isDeadlineTight = () => {
+    if (!deadline) return false;
+    const diffMs = new Date(deadline) - new Date();
+    return diffMs > 0 && diffMs < 30 * 60 * 1000;
+  };
+
+  // Minimum datetime string for the input (now, rounded to minute)
+  const minDatetime = () => {
+    const now = new Date();
+    now.setSeconds(0, 0);
+    return now.toISOString().slice(0, 16); // "YYYY-MM-DDTHH:MM"
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -20,12 +35,19 @@ function UploadForm() {
       setError("Please select a PDF file");
       return;
     }
+    
+    // Block past deadlines
+    if (deadline && new Date(deadline) <= new Date()) {
+      setError("Deadline must be in the future");
+      return;
+    }
 
     const formData = new FormData();
     files.forEach((file) => formData.append("files", file));
     formData.append("copies", copies);
     formData.append("color", color);
     formData.append("double_sided", doubleSided);
+    if (deadline) formData.append("deadline", deadline);
 
     try {
       const response = await printJobService.createPrintJob(formData);
@@ -33,11 +55,11 @@ function UploadForm() {
       addActiveJob(newJobId); // ✅ add to active jobs list
       setSuccess(`Job submitted! Tracking job ${newJobId.slice(0, 8)}...`);
       setFiles([]);
+      setDeadline("");
     } catch (err) {
       setError("Upload failed");
     }
   };
-
   return (
     <div>
       <h2>Upload Document</h2>
@@ -78,6 +100,26 @@ function UploadForm() {
             Double sided
           </label>
         </div>
+
+        {/* NEW: deadline picker */}
+        <div>
+          <label>
+            Deadline (optional):
+            <input
+              type="datetime-local"
+              value={deadline}
+              min={minDatetime()}
+              onChange={(e) => setDeadline(e.target.value)}
+              style={{ marginLeft: "8px" }}
+            />
+          </label>
+          {isDeadlineTight() && (
+            <p style={{ color: "orange", margin: "4px 0 0" }}>
+              ⚠️ Deadline is less than 30 minutes away — printing may not finish in time.
+            </p>
+          )}
+        </div>
+
         <button type="submit">Submit</button>
       </form>
       {success && <p style={{ color: "green" }}>{success}</p>}

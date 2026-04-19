@@ -1,7 +1,7 @@
 // backend/controllers/printJobs.controller.js
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
-import { sendOTPEmail } from "../services/emailService.js";
+import { sendOTPEmail,sendStatusEmail } from "../services/emailService.js";
 
 // Helper function for OTP generation — now also emails the user
 async function generateOTP(jobId) {
@@ -153,6 +153,10 @@ export const getJobById = async (req, res) => {
   }
 };
 
+// At the top, update the import:
+import { sendOTPEmail, sendStatusEmail } from "../services/emailService.js";
+
+// Replace updateJobStatus with this:
 export const updateJobStatus = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -165,9 +169,12 @@ export const updateJobStatus = async (req, res) => {
   };
 
   try {
-    //1. Get current status
+    // 1. Get current status + user email in one query
     const current = await pool.query(
-      "SELECT status FROM print_jobs WHERE id = $1",
+      `SELECT j.status, u.email
+       FROM print_jobs j
+       JOIN users u ON j.user_id = u.id
+       WHERE j.id = $1`,
       [id]
     );
 
@@ -175,8 +182,8 @@ export const updateJobStatus = async (req, res) => {
       return res.status(404).json({ error: "Job not found" });
     }
 
-    //2. Validate transition
-    const currentStatus = current.rows[0].status;
+    // 2. Validate transition
+    const { status: currentStatus, email } = current.rows[0];
     const allowedNext = ALLOWED_STATUS_TRANSITIONS[currentStatus] || [];
 
     if (!allowedNext.includes(status)) {
@@ -185,13 +192,20 @@ export const updateJobStatus = async (req, res) => {
       });
     }
 
-    //3. Update status
+    // 3. Update status
     await pool.query("UPDATE print_jobs SET status = $1 WHERE id = $2", [
       status,
       id,
     ]);
 
     res.json({ message: "Status updated successfully" });
+
+    // 4. Fire status email (non-blocking — after response sent)
+    if (email && (status === "QUEUED" || status === "READY")) {
+      sendStatusEmail(email, id, status).catch((err) =>
+        console.error("STATUS EMAIL ERROR:", err.message)
+      );
+    }
   } catch (err) {
     console.error("DB ERROR:", err.message);
     res.status(500).json({ error: "Failed to update status" });

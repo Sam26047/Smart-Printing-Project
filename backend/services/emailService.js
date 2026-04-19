@@ -28,3 +28,33 @@ export const sendOTPEmail = async (toEmail, otp, jobId) => {
     `,
   });
 };
+
+// generic status change notification
+export const sendStatusEmail = async (toEmail, jobId, newStatus) => {
+  const statusMessages = {
+    QUEUED: {
+      subject: "Your print job has been queued",
+      heading: "Job added to the queue",
+      body: "Your job is now in the print queue and will begin printing shortly.",
+    },
+    READY: {
+      subject: "Your print job is ready for collection!",
+      heading: "Ready for collection",
+      body: "Your documents are printed and ready. Head to the counter and use your OTP to collect them.",
+    },
+  };
+  const msg = statusMessages[newStatus];
+  if (!msg) return; // don't email for other transitions
+
+  await transporter.sendMail({
+    from: `"Print Shop" <${config.email.from}>`,
+    to: toEmail,
+    subject: msg.subject,
+    text: `${msg.heading}\n\nJob ID: ${jobId.slice(0, 8)}...\n\n${msg.body}`,
+    html: `
+      <h2>${msg.heading}</h2>
+      <p>Job ID: <code>${jobId.slice(0, 8)}...</code></p>
+      <p>${msg.body}</p>
+    `,
+  });
+};
