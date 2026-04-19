@@ -153,9 +153,6 @@ export const getJobById = async (req, res) => {
   }
 };
 
-// At the top, update the import:
-import { sendOTPEmail, sendStatusEmail } from "../services/emailService.js";
-
 // Replace updateJobStatus with this:
 export const updateJobStatus = async (req, res) => {
   const { id } = req.params;
