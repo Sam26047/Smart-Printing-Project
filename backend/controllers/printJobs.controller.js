@@ -42,9 +42,10 @@ export const getAllJobs = async (req, res) => {
         j.priority,
         j.deadline,
         j.created_at,
-        f.file_name
+        ARRAY_AGG(f.file_name ORDER BY f.file_name) FILTER (WHERE f.file_name IS NOT NULL) AS file_names
       FROM print_jobs j
       LEFT JOIN job_files f ON j.id = f.job_id
+      GROUP BY j.id
       ORDER BY
         j.priority DESC,
         CASE WHEN j.deadline IS NULL THEN 1 ELSE 0 END,
@@ -52,7 +53,6 @@ export const getAllJobs = async (req, res) => {
         j.created_at ASC
       `
     );
-
     res.json({ jobs: result.rows });
   } catch (err) {
     console.error("FETCH JOBS ERROR:", err.message);

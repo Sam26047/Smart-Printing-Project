@@ -63,7 +63,11 @@ const AdminJobRow = ({ job, onUpdate }) => {
       <td style={{ fontFamily: "monospace", fontSize: "12px" }}>
         {job.id.slice(0, 8)}...
       </td>
-      <td>{job.file_name || "—"}</td>
+      <td>
+        {job.file_names && job.file_names.length > 0
+          ? job.file_names.map((name, i) => <div key={i}>{name}</div>)
+          : "—"}
+      </td>
       <td>
         <span
           style={{

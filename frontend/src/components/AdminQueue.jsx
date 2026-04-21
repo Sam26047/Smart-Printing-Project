@@ -22,12 +22,15 @@ const AdminQueue = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // In AdminQueue.jsx — update the search filter:
   const filtered = jobs.filter((job) => {
     const matchesStatus = filterStatus === "ALL" || job.status === filterStatus;
     const matchesSearch =
       search.trim() === "" ||
       job.id.toLowerCase().includes(search.toLowerCase()) ||
-      (job.file_name || "").toLowerCase().includes(search.toLowerCase());
+      (job.file_names || []).some((name) =>
+        name.toLowerCase().includes(search.toLowerCase())
+      );
     return matchesStatus && matchesSearch;
   });
 
