@@ -64,9 +64,18 @@ const AdminJobRow = ({ job, onUpdate }) => {
         {job.id.slice(0, 8)}...
       </td>
       <td>
-        {job.file_names && job.file_names.length > 0
-          ? job.file_names.map((name, i) => <div key={i}>{name}</div>)
-          : "—"}
+        {job.files && job.files.length > 0 ? (
+          <ul style={{ margin: 0, paddingLeft: "16px" }}>
+            {job.files.map((f, i) => (
+              <li key={i} style={{ fontSize: "12px", marginBottom: "2px" }}>
+                <strong>{f.file_name}</strong>
+                <span style={{ color: "#666", marginLeft: "6px" }}>
+                  {f.copies}× · {f.color ? "Color" : "B&W"} · {f.double_sided ? "Double" : "Single"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : "—"}
       </td>
       <td>
         <span

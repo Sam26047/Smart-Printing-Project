@@ -31,18 +31,23 @@ async function generateOTP(jobId) {
 
   return otp;
 }
-
 export const getAllJobs = async (req, res) => {
   try {
     const result = await pool.query(
-      `
-      SELECT
+      `SELECT
         j.id,
         j.status,
         j.priority,
         j.deadline,
         j.created_at,
-        ARRAY_AGG(f.file_name ORDER BY f.file_name) FILTER (WHERE f.file_name IS NOT NULL) AS file_names
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'file_name', f.file_name,
+            'copies', f.copies,
+            'color', f.color,
+            'double_sided', f.double_sided
+          ) ORDER BY f.file_name
+        ) FILTER (WHERE f.file_name IS NOT NULL) AS files
       FROM print_jobs j
       LEFT JOIN job_files f ON j.id = f.job_id
       GROUP BY j.id
@@ -50,8 +55,7 @@ export const getAllJobs = async (req, res) => {
         j.priority DESC,
         CASE WHEN j.deadline IS NULL THEN 1 ELSE 0 END,
         j.deadline ASC,
-        j.created_at ASC
-      `
+        j.created_at ASC`
     );
     res.json({ jobs: result.rows });
   } catch (err) {
@@ -62,7 +66,7 @@ export const getAllJobs = async (req, res) => {
 
 export const createPrintJob = async (req, res) => {
   try {
-    const { copies, color, double_sided, deadline } = req.body;
+    const { deadline, fileSettings } = req.body;
     const userId = req.user.id;
 
     // ✅ validation
@@ -70,44 +74,53 @@ export const createPrintJob = async (req, res) => {
       return res.status(400).json({ error: "At least one PDF is required" });
     }
 
-    if (!copies) {
-      return res.status(400).json({ error: "Copies are required" });
+    // fileSettings is sent as a JSON string: [{ copies, color, double_sided }, ...]
+    let settings = [];
+    try {
+      settings = fileSettings ? JSON.parse(fileSettings) : [];
+    } catch {
+      return res.status(400).json({ error: "Invalid fileSettings format" });
     }
 
     // 1️⃣ create job (NO file columns anymore)
+    // ❗ copies/color/double_sided moved to per-file level
     const jobResult = await pool.query(
-      `
-      INSERT INTO print_jobs
-        (user_id, copies, color, double_sided, status, deadline)
-      VALUES
-        ($1, $2, $3, $4, 'PENDING', $5)
-      RETURNING id
-      `,
-      [userId, copies, color, double_sided, deadline || null]
+      `INSERT INTO print_jobs (user_id, status, deadline)
+       VALUES ($1, 'PENDING', $2)
+       RETURNING id`,
+      [userId, deadline || null]
     );
 
     const jobId = jobResult.rows[0].id;
 
     // ✅ Use a Redis Set so multiple jobs can be active at once
     // sAdd adds jobId into the set — if set doesn't exist, Redis creates it
-    await redisClient.sAdd(`user:${userId}:activeJobs`, jobId); //key, value
+    await redisClient.sAdd(`user:${userId}:activeJobs`, jobId); // key, value
 
-    // 2️⃣ Insert all files
-    const insertFilesPromises = req.files.map((file) =>
-      pool.query(
+    // 2️⃣ Insert all files (with per-file settings now)
+    const insertFilesPromises = req.files.map((file, index) => {
+      const s = settings[index] || {};
+
+      // fallback defaults if settings missing
+      const copies = parseInt(s.copies) || 1;
+      const color = s.color === true || s.color === "true";
+      const double_sided =
+        s.double_sided === true || s.double_sided === "true";
+
+      return pool.query(
         `
         INSERT INTO job_files
-          (job_id, file_name, file_path)
+          (job_id, file_name, file_path, copies, color, double_sided)
         VALUES
-          ($1, $2, $3)
+          ($1, $2, $3, $4, $5, $6)
         `,
-        [jobId, file.originalname, file.path]
-      )
-    );
+        [jobId, file.originalname, file.path, copies, color, double_sided]
+      );
+    });
 
-    await Promise.all(insertFilesPromises); //wait until all these promises finish,
-    // i.e if all inserts succeed ->continue
-    //else throw error
+    await Promise.all(insertFilesPromises); // wait until all these promises finish
+    // i.e if all inserts succeed -> continue
+    // else throw error
 
     // 3️⃣ response
     res.status(201).json({

@@ -22,14 +22,14 @@ const AdminQueue = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // In AdminQueue.jsx — update the search filter:
+  // In AdminQueue.jsx, update the search filter to use the new `files` array:
   const filtered = jobs.filter((job) => {
     const matchesStatus = filterStatus === "ALL" || job.status === filterStatus;
     const matchesSearch =
       search.trim() === "" ||
       job.id.toLowerCase().includes(search.toLowerCase()) ||
-      (job.file_names || []).some((name) =>
-        name.toLowerCase().includes(search.toLowerCase())
+      (job.files || []).some((f) =>
+        f.file_name.toLowerCase().includes(search.toLowerCase())
       );
     return matchesStatus && matchesSearch;
   });
