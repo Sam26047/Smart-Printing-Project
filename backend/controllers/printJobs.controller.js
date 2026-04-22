@@ -137,21 +137,11 @@ export const createPrintJob = async (req, res) => {
 export const getJobById = async (req, res) => {
   const { id } = req.params;
 
-  // UUID validation would go here if you want it
-
   try {
     const result = await pool.query(
-      `
-      SELECT
-        id,
-        copies,
-        color,
-        double_sided,
-        status,
-        created_at
-      FROM print_jobs
-      WHERE id = $1
-      `,
+      `SELECT id, status, created_at
+       FROM print_jobs
+       WHERE id = $1`,
       [id]
     );
 
