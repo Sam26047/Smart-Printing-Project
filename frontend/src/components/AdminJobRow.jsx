@@ -25,7 +25,7 @@ function formatDeadline(deadline) {
   const diffMin = Math.round(diffMs / 60000);
   const formatted = d.toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   if (diffMs < 0)    return <span style={{ color: "var(--rose)" }}>{formatted} ⚠ overdue</span>;
-  if (diffMin < 30)  return <span style={{ color: "var(--amber-d)" }}>{formatted} · {diffMin}m left ⚠</span>;
+  if (diffMin < 30)  return <span style={{ color: "var(--amber-dark)" }}>{formatted} · {diffMin}m left ⚠</span>;
   return formatted;
 }
 

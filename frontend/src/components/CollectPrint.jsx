@@ -38,8 +38,8 @@ export default function CollectPrint({ jobId }) {
 
   if (message) {
     return (
-      <div className="otp-box" style={{ background: "var(--teal-l)", borderColor: "#5eead4" }}>
-        <p style={{ fontSize: 13, color: "var(--teal-d)", fontFamily: "var(--mono)" }}>{message}</p>
+      <div className="otp-box" style={{ background: "var(--teal-lite)", borderColor: "#5eead4" }}>
+        <p style={{ fontSize: 13, color: "var(--teal-dark)", fontFamily: "var(--mono)" }}>{message}</p>
       </div>
     );
   }
