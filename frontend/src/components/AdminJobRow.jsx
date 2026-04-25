@@ -2,135 +2,114 @@
 import { useState } from "react";
 import adminJobs from "../services/adminJobs";
 
-const STATUS_TRANSITIONS = {
-  PENDING: "QUEUED",
-  QUEUED: "PRINTING",
+const NEXT_STATUS = { // maps current status → what the advance button sets it to
+  PENDING:  "QUEUED",
+  QUEUED:   "PRINTING",
   PRINTING: "READY",
-  READY: "COLLECTED",
+  READY:    "COLLECTED",
 };
 
-const STATUS_COLORS = {
-  PENDING: "#999",
-  QUEUED: "#2196F3",
-  PRINTING: "#FF9800",
-  READY: "#4CAF50",
-  COLLECTED: "#9E9E9E",
-};
+function StatusBadge({ status }) {
+  return (
+    <span className={`badge badge-${status?.toLowerCase()}`}>
+      <span className="badge-dot" />
+      {status?.toLowerCase()}
+    </span>
+  );
+}
 
-const AdminJobRow = ({ job, onUpdate }) => {
-  const [loading, setLoading] = useState(false);
-  const [priorityInput, setPriorityInput] = useState(job.priority ?? 0);
+function formatDeadline(deadline) {
+  if (!deadline) return "—";
+  const d      = new Date(deadline);
+  const diffMs = d - Date.now();
+  const diffMin = Math.round(diffMs / 60000);
+  const formatted = d.toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  if (diffMs < 0)    return <span style={{ color: "var(--rose)" }}>{formatted} ⚠ overdue</span>;
+  if (diffMin < 30)  return <span style={{ color: "var(--amber-d)" }}>{formatted} · {diffMin}m left ⚠</span>;
+  return formatted;
+}
 
-  const nextStatus = STATUS_TRANSITIONS[job.status];
+export default function AdminJobRow({ job, onUpdate }) {
+  const [loading, setLoading]       = useState(false);
+  const [priority, setPriority]     = useState(job.priority ?? 0);
 
-  const handleStatusAdvance = async () => {
+  const nextStatus = NEXT_STATUS[job.status];
+  const canAdvance = !!nextStatus;
+
+  const handleAdvance = async () => {
     if (!nextStatus) return;
     setLoading(true);
     try {
       await adminJobs.updateStatus(job.id, nextStatus);
-      onUpdate();
-    } catch (err) {
-      alert("Failed to update status");
+      onUpdate(); // re-fetch the full queue after update
+    } catch {
+      alert("Failed to update status.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handlePriorityChange = async (newPriority) => {
-    if (job.status !== "QUEUED") return;
+  const handlePriority = async (newVal) => {
+    if (job.status !== "QUEUED") return; // priority only applies to queued jobs
     try {
-      await adminJobs.updatePriority(job.id, newPriority);
-      setPriorityInput(newPriority);
+      await adminJobs.updatePriority(job.id, newVal);
+      setPriority(newVal);
       onUpdate();
-    } catch (err) {
-      alert("Failed to update priority");
+    } catch {
+      alert("Failed to update priority.");
     }
   };
 
-  const formatDeadline = (deadline) => {
-    if (!deadline) return "—";
-    const d = new Date(deadline);
-    const diffMs = d - new Date();
-    const diffMin = Math.round(diffMs / 60000);
-    const formatted = d.toLocaleString();
-    if (diffMs < 0) return `${formatted} ⚠️ overdue`;
-    if (diffMin < 30) return `${formatted} ⚠️ ${diffMin}m left`;
-    return formatted;
-  };
+  const primaryFile = job.files?.[0];
+  const extraFiles  = (job.files?.length || 1) - 1;
 
   return (
     <tr>
-      <td style={{ fontFamily: "monospace", fontSize: "12px" }}>
-        {job.id.slice(0, 8)}...
+      <td style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--gray)" }}>
+        {job.id.slice(0, 8)}…
       </td>
+
       <td>
-        {job.files && job.files.length > 0 ? (
-          <ul style={{ margin: 0, paddingLeft: "16px" }}>
-            {job.files.map((f, i) => (
-              <li key={i} style={{ fontSize: "12px", marginBottom: "2px" }}>
-                <strong>{f.file_name}</strong>
-                <span style={{ color: "#666", marginLeft: "6px" }}>
-                  {f.copies}× · {f.color ? "Color" : "B&W"} · {f.double_sided ? "Double" : "Single"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : "—"}
-      </td>
-      <td>
-        <span
-          style={{
-            color: STATUS_COLORS[job.status] || "#333",
-            fontWeight: "bold",
-          }}
-        >
-          {job.status}
-        </span>
-      </td>
-      <td>
-        {job.status === "QUEUED" ? (
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <button
-              onClick={() => handlePriorityChange(priorityInput - 1)}
-              title="Lower priority"
-            >
-              ▼
-            </button>
-            <span style={{ minWidth: "24px", textAlign: "center" }}>
-              {priorityInput}
-            </span>
-            <button
-              onClick={() => handlePriorityChange(priorityInput + 1)}
-              title="Raise priority"
-            >
-              ▲
-            </button>
-          </div>
+        {primaryFile ? (
+          <>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>{primaryFile.file_name}</div>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--gray)", marginTop: 2 }}>
+              {primaryFile.copies}× · {primaryFile.color ? "Color" : "B&W"} · {primaryFile.double_sided ? "Double" : "Single"}
+              {extraFiles > 0 && <span style={{ marginLeft: 6 }}>+ {extraFiles} more</span>}
+            </div>
+          </>
         ) : (
-          <span style={{ color: "#aaa" }}>{job.priority ?? 0}</span>
+          <span style={{ color: "var(--gray)" }}>—</span>
         )}
       </td>
-      <td
-        style={{
-          color:
-            job.deadline && new Date(job.deadline) - new Date() < 30 * 60000
-              ? "orange"
-              : "inherit",
-        }}
-      >
+
+      <td><StatusBadge status={job.status} /></td>
+
+      <td>
+        {job.status === "QUEUED" ? (
+          <div className="priority-ctrl">
+            <button className="p-btn" onClick={() => handlePriority(priority - 1)}>▼</button>
+            <span className="p-val">{priority}</span>
+            <button className="p-btn" onClick={() => handlePriority(priority + 1)}>▲</button>
+          </div>
+        ) : (
+          <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--gray)", opacity: 0.5 }}>{priority}</span>
+        )}
+      </td>
+
+      <td style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
         {formatDeadline(job.deadline)}
       </td>
+
       <td>
-        {nextStatus ? (
-          <button onClick={handleStatusAdvance} disabled={loading}>
-            {loading ? "..." : `→ ${nextStatus}`}
+        {canAdvance ? (
+          <button className="btn btn-ghost btn-sm" onClick={handleAdvance} disabled={loading}>
+            {loading ? "…" : `→ ${nextStatus.toLowerCase()}`}
           </button>
         ) : (
-          <span style={{ color: "#aaa" }}>Done</span>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--gray)" }}>done</span>
         )}
       </td>
     </tr>
   );
-};
-
-export default AdminJobRow;
+}

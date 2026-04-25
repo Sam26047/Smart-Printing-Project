@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/dm-mono": "^5.2.7",
+    "@fontsource/sora": "^5.2.8",
     "axios": "^1.13.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
