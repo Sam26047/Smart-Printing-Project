@@ -28,9 +28,22 @@ export default function AdminUsers() {
 
   useEffect(() => {
     apiClient
-      .get("/admin/users")
-      .then((res) => { setUsers(res.data.users || res.data); setLoading(false); })
-      .catch(() => { setError("Failed to load users."); setLoading(false); });
+      .get("/users") // getAllUsers controller lives on /users, not /admin/users
+      .then((res) => {
+        // getAllUsers returns result.rows directly (plain array)
+        // handle all possible shapes defensively: array, { users:[] }, { rows:[] }
+        const raw = res.data;
+        let arr = [];
+        if (Array.isArray(raw))             arr = raw;
+        else if (Array.isArray(raw?.users)) arr = raw.users;
+        else if (Array.isArray(raw?.rows))  arr = raw.rows;
+        setUsers(arr);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err.response?.data?.error || "Failed to load users.");
+        setLoading(false);
+      });
   }, []);
 
   if (loading) return <p className="loading-text">Loading users…</p>;
@@ -39,17 +52,17 @@ export default function AdminUsers() {
 
   return (
     <>
-      {/* Summary row */}
+      {/* Summary stat row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
         <div className="stat-card blue">
           <div className="stat-val">{users.length}</div>
           <div className="stat-lbl">total users</div>
         </div>
-        <div className="stat-card teal">
+        <div className="stat-card rose">
           <div className="stat-val">{users.filter(u => u.role === "ADMIN").length}</div>
           <div className="stat-lbl">admins</div>
         </div>
-        <div className="stat-card amber">
+        <div className="stat-card teal">
           <div className="stat-val">{users.filter(u => u.role !== "ADMIN").length}</div>
           <div className="stat-lbl">students</div>
         </div>
@@ -73,6 +86,7 @@ export default function AdminUsers() {
                 <tr key={u.id}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {/* coloured initials avatar */}
                       <div style={{
                         width: 32, height: 32, borderRadius: "50%",
                         background: av.bg, color: av.color,
@@ -91,7 +105,7 @@ export default function AdminUsers() {
                   <td>
                     <span className={`badge ${u.role === "ADMIN" ? "badge-printing" : "badge-queued"}`}>
                       <span className="badge-dot" />
-                      {(u.role || "user").toLowerCase()}
+                      {(u.role || "student").toLowerCase()}
                     </span>
                   </td>
                   <td style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--gray)" }}>
