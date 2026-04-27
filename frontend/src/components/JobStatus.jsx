@@ -1,81 +1,135 @@
 // frontend/src/components/JobStatus.jsx
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import printJobService from "../services/printJobs";
-import CollectPrint from "./CollectPrint";
+import { useAuth } from "../hooks/useAuth";
 
 const STEPS = ["PENDING", "QUEUED", "PRINTING", "READY", "COLLECTED"];
 
-function CheckIcon() {
-  return (
-    <svg className="stepper-check" viewBox="0 0 16 16">
-      <polyline points="3,8 6.5,11.5 13,5" />
-    </svg>
-  );
-}
-
-function StepDot({ stepName, currentStatus }) {
-  const stepIndex    = STEPS.indexOf(stepName);
-  const currentIndex = STEPS.indexOf(currentStatus);
-
-  const isDone   = stepIndex < currentIndex;
-  const isActive = stepIndex === currentIndex;
-
-  let cls = "stepper-circle";
-  if (isDone)   cls += " done";
-  if (isActive) cls += " active";
-
-  return (
-    <div className="stepper-node">
-      <div className={cls}>
-        {isDone   && <CheckIcon />}
-        {isActive && <div className="stepper-dot" />}
-      </div>
-      <span className="stepper-label">{stepName.toLowerCase()}</span>
-    </div>
-  );
-}
-
 function StatusBadge({ status }) {
-  const cls = `badge badge-${status?.toLowerCase()}`;
   return (
-    <span className={cls}>
+    <span className={`badge badge-${status?.toLowerCase()}`}>
       <span className="badge-dot" />
       {status?.toLowerCase()}
     </span>
   );
 }
 
+// Shows which step is done / active / pending in the status flow
+function StepDot({ stepName, currentStatus }) {
+  const currentIdx = STEPS.indexOf(currentStatus);
+  const stepIdx    = STEPS.indexOf(stepName);
+  const isDone     = stepIdx < currentIdx;
+  const isActive   = stepIdx === currentIdx;
+
+  return (
+    <div className="stepper-node">
+      <div className={`stepper-circle ${isDone ? "done" : ""} ${isActive ? "active" : ""}`}>
+        {isDone ? (
+          <svg className="stepper-check" viewBox="0 0 12 12">
+            <polyline points="1.5,6 4.5,9 10.5,3" />
+          </svg>
+        ) : (
+          <div className="stepper-dot" />
+        )}
+      </div>
+      <div className="stepper-label">{stepName.toLowerCase()}</div>
+    </div>
+  );
+}
+
+// Urgency pill — shows the user's chosen priority on their live job card
+function UrgencyPill({ level }) {
+  const map = {
+    URGENT: { emoji: "🔴", label: "urgent",  color: "var(--rose-dark)",  bg: "var(--rose-lite)"  },
+    SOON:   { emoji: "🟡", label: "soon",    color: "var(--amber-dark)", bg: "var(--amber-lite)" },
+    NORMAL: { emoji: "🟢", label: "normal",  color: "var(--teal-dark)",  bg: "var(--teal-lite)"  },
+  };
+  const u = map[level] || map.NORMAL;
+  return (
+    <span style={{
+      fontFamily: "var(--mono)", fontSize: 11,
+      color: u.color, background: u.bg,
+      padding: "2px 8px", borderRadius: 20,
+    }}>
+      {u.emoji} {u.label}
+    </span>
+  );
+}
+
+// ── Collect section (shown when status = READY) ───────────────────────────────
+function CollectPrint({ jobId }) {
+  const { removeActiveJob } = useAuth();
+  const [otp, setOtp]         = useState("");
+  const [msg, setMsg]         = useState(null);
+  const [err, setErr]         = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleCollect = async () => {
+    setMsg(null); setErr(null); setLoading(true);
+    try {
+      await printJobService.collectPrintJob(otp, jobId);
+      setMsg("Collected! ✓");
+      removeActiveJob(jobId); // removes card from active list and bumps history
+    } catch (e) {
+      setErr(e.response?.data?.error || "Collection failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    try {
+      await printJobService.regenerateOtp(jobId);
+      setMsg("New OTP sent to your email.");
+    } catch {
+      setErr("Failed to resend OTP.");
+    }
+  };
+
+  return (
+    <div>
+      <div className="otp-box" style={{ marginBottom: 10 }}>
+        <div className="otp-label">enter otp to collect</div>
+        <input
+          className="form-input"
+          style={{ textAlign: "center", letterSpacing: "0.2em", fontSize: 20, marginTop: 6 }}
+          maxLength={6}
+          value={otp}
+          onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+          placeholder="——————"
+        />
+      </div>
+      <div className="btn-row" style={{ marginTop: 8 }}>
+        <button className="btn btn-ghost btn-sm" onClick={handleResend}>resend otp</button>
+        <button className="btn btn-primary" onClick={handleCollect} disabled={loading || otp.length < 6}>
+          {loading ? "…" : "collect →"}
+        </button>
+      </div>
+      {msg && <div className="alert alert-success">{msg}</div>}
+      {err && <div className="alert alert-error">{err}</div>}
+    </div>
+  );
+}
+
+// ── Main JobStatus card ───────────────────────────────────────────────────────
 export default function JobStatus({ jobId }) {
   const [job, setJob]     = useState(null);
   const [error, setError] = useState(null);
-  const intervalRef = useRef(null); // ✅ ref instead of let variable
 
   useEffect(() => {
-    if (!jobId) return;
-
-    const fetch = async () => {
-      try {
-        const res = await printJobService.getJobById(jobId);
-        setJob(res.data);
-
-        if (["READY", "COLLECTED"].includes(res.data.status)) {
-          clearInterval(intervalRef.current); // ✅ always has the right value
-        }
-      } catch {
-        setError("Could not fetch job status.");
-        clearInterval(intervalRef.current);
-      }
+    const fetch = () => {
+      printJobService.getJobById(jobId)
+        .then((res) => setJob(res.data))
+        .catch(() => setError("Could not load job."));
     };
-
     fetch();
-    intervalRef.current = setInterval(fetch, 4000);
-
-    return () => clearInterval(intervalRef.current); // cleanup on unmount
+    // Poll every 5s so status updates (PRINTING → READY) appear automatically
+    const interval = setInterval(fetch, 5000);
+    return () => clearInterval(interval);
   }, [jobId]);
 
-  if (!jobId) return null;
-  if (error)  return <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>;
-  if (!job)   return <p className="loading-text">Loading job {jobId.slice(0, 8)}…</p>;
+  if (error) return <div className="alert alert-error">{error}</div>;
+  if (!job)  return <p className="loading-text">Loading job {jobId.slice(0, 8)}…</p>;
 
   const primaryFile = job.files?.[0]?.file_name
     || job.file_name
@@ -113,24 +167,16 @@ export default function JobStatus({ jobId }) {
           <div className="stepper-step" key={step}>
             <StepDot stepName={step} currentStatus={job.status} />
             {i < STEPS.length - 1 && (
-              <div
-                className={`stepper-line ${STEPS.indexOf(job.status) > i ? "done" : ""}`}
-              />
+              <div className={`stepper-line ${STEPS.indexOf(job.status) > i ? "done" : ""}`} />
             )}
           </div>
         ))}
       </div>
 
-      {/* Body: deadline left + OTP if ready */}
+      {/* Footer: urgency pill (replaces "no deadline set") + collect section */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 4 }}>
-        <div style={{ fontSize: 12, fontFamily: "var(--mono)", color: "var(--gray)" }}>
-          {job.deadline
-            ? `deadline: ${new Date(job.deadline).toLocaleString("en-IN", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}`
-            : "no deadline set"}
-        </div>
-        {job.status === "READY" && (
-          <CollectPrint jobId={jobId} />
-        )}
+        <UrgencyPill level={job.urgency_level || "NORMAL"} />
+        {job.status === "READY" && <CollectPrint jobId={jobId} />}
       </div>
     </div>
   );

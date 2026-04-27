@@ -1,7 +1,14 @@
 // backend/controllers/printJobs.controller.js
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
-import { sendOTPEmail,sendStatusEmail } from "../services/emailService.js";
+import { sendOTPEmail, sendStatusEmail } from "../services/emailService.js";
+import {
+  getUrgencyMultiplier,
+  isUrgentDisabled,
+  calculateJobCost,
+  URGENT_DAILY_LIMIT,
+  URGENT_COOLDOWN_MS,
+} from "../utils/pricing.js";
 
 // Helper function for OTP generation — now also emails the user
 async function generateOTP(jobId) {
@@ -31,6 +38,15 @@ async function generateOTP(jobId) {
 
   return otp;
 }
+
+// ─── Helper: get current QUEUED job count (used for dynamic pricing + peak check) ───
+async function getQueueSize() {
+  const result = await pool.query(
+    "SELECT COUNT(*) AS count FROM print_jobs WHERE status = 'QUEUED'"
+  );
+  return parseInt(result.rows[0].count) || 0;
+}
+
 export const getAllJobs = async (req, res) => {
   try {
     const result = await pool.query(
@@ -39,6 +55,7 @@ export const getAllJobs = async (req, res) => {
         j.status,
         j.priority,
         j.deadline,
+        j.urgency_level,
         j.created_at,
         JSON_AGG(
           JSON_BUILD_OBJECT(
@@ -64,14 +81,36 @@ export const getAllJobs = async (req, res) => {
   }
 };
 
+// ─── GET /queue/status — public endpoint ─────────────────────────────────────
+// Returns queue size and whether urgent is currently available.
+// Frontend uses this to show "You are #N in queue" and grey-out urgent if needed.
+export const getQueueStatus = async (req, res) => {
+  try {
+    const queueSize = await getQueueSize();
+    res.json({
+      queue_size: queueSize,
+      urgent_disabled: isUrgentDisabled(queueSize),
+    });
+  } catch (err) {
+    console.error("QUEUE STATUS ERROR:", err.message);
+    res.status(500).json({ error: "Failed to fetch queue status" });
+  }
+};
+
 export const createPrintJob = async (req, res) => {
   try {
-    const { deadline, fileSettings } = req.body;
+    // urgency_level replaces free-form deadline as the user-facing priority control
+    const { deadline, fileSettings, urgency_level = "NORMAL" } = req.body;
     const userId = req.user.id;
 
     // ✅ validation
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: "At least one PDF is required" });
+    }
+
+    // Validate urgency_level value
+    if (!["NORMAL", "SOON", "URGENT"].includes(urgency_level)) {
+      return res.status(400).json({ error: "Invalid urgency level" });
     }
 
     // fileSettings is sent as a JSON string: [{ copies, color, double_sided }, ...]
@@ -82,13 +121,77 @@ export const createPrintJob = async (req, res) => {
       return res.status(400).json({ error: "Invalid fileSettings format" });
     }
 
-    // 1️⃣ create job (NO file columns anymore)
-    // ❗ copies/color/double_sided moved to per-file level
+    // ─── Current queue size — needed for dynamic pricing + peak check ─────────
+    const queueSize = await getQueueSize();
+
+    // ─── Abuse protection (URGENT only) ──────────────────────────────────────
+    if (urgency_level === "URGENT") {
+      // Block if peak load — too many jobs in queue
+      if (isUrgentDisabled(queueSize)) {
+        return res.status(429).json({
+          error: "Urgent unavailable due to high load. Please choose Normal or Soon.",
+        });
+      }
+
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      // Rule 1: max URGENT_DAILY_LIMIT urgent jobs per 24 hours
+      const dailyResult = await pool.query(
+        `SELECT COUNT(*) AS count
+         FROM urgency_usage
+         WHERE user_id = $1 AND used_at > $2`,
+        [userId, oneDayAgo]
+      );
+      const dailyCount = parseInt(dailyResult.rows[0].count) || 0;
+
+      if (dailyCount >= URGENT_DAILY_LIMIT) {
+        return res.status(429).json({
+          error: `Daily urgent limit reached (${URGENT_DAILY_LIMIT} per day). Try again tomorrow.`,
+        });
+      }
+
+      // Rule 2: cooldown — cannot use urgent again within URGENT_COOLDOWN_MS
+      const cooldownResult = await pool.query(
+        `SELECT used_at
+         FROM urgency_usage
+         WHERE user_id = $1
+         ORDER BY used_at DESC
+         LIMIT 1`,
+        [userId]
+      );
+
+      if (cooldownResult.rows.length > 0) {
+        const lastUsed    = new Date(cooldownResult.rows[0].used_at);
+        const msSinceLast = Date.now() - lastUsed.getTime();
+
+        if (msSinceLast < URGENT_COOLDOWN_MS) {
+          const minutesLeft = Math.ceil((URGENT_COOLDOWN_MS - msSinceLast) / 60000);
+          return res.status(429).json({
+            error: `Cooldown active. You can use Urgent again in ${minutesLeft} minute(s).`,
+            cooldown_minutes_left: minutesLeft,
+          });
+        }
+      }
+
+      // Passes all checks → record this urgent usage
+      await pool.query(
+        "INSERT INTO urgency_usage (user_id) VALUES ($1)",
+        [userId]
+      );
+    }
+
+    // ─── Pricing calculation ─────────────────────────────────────────────────
+    // Multiplier depends on urgency level AND how busy the queue is
+    const multiplier = getUrgencyMultiplier(urgency_level, queueSize);
+    const pricing    = calculateJobCost(settings, multiplier);
+
+    // 1️⃣ Create job — urgency_level stored alongside deadline for worker sorting
+    // ❗ copies/color/double_sided moved to per-file level (job_files table)
     const jobResult = await pool.query(
-      `INSERT INTO print_jobs (user_id, status, deadline)
-       VALUES ($1, 'PENDING', $2)
+      `INSERT INTO print_jobs (user_id, status, deadline, urgency_level)
+       VALUES ($1, 'PENDING', $2, $3)
        RETURNING id`,
-      [userId, deadline || null]
+      [userId, deadline || null, urgency_level]
     );
 
     const jobId = jobResult.rows[0].id;
@@ -102,18 +205,14 @@ export const createPrintJob = async (req, res) => {
       const s = settings[index] || {};
 
       // fallback defaults if settings missing
-      const copies = parseInt(s.copies) || 1;
-      const color = s.color === true || s.color === "true";
-      const double_sided =
-        s.double_sided === true || s.double_sided === "true";
+      const copies      = parseInt(s.copies) || 1;
+      const color       = s.color === true || s.color === "true";
+      const double_sided = s.double_sided === true || s.double_sided === "true";
 
       return pool.query(
-        `
-        INSERT INTO job_files
+        `INSERT INTO job_files
           (job_id, file_name, file_path, copies, color, double_sided)
-        VALUES
-          ($1, $2, $3, $4, $5, $6)
-        `,
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [jobId, file.originalname, file.path, copies, color, double_sided]
       );
     });
@@ -122,10 +221,18 @@ export const createPrintJob = async (req, res) => {
     // i.e if all inserts succeed -> continue
     // else throw error
 
-    // 3️⃣ response
+    // 3️⃣ Response — include full pricing breakdown so frontend can display it
     res.status(201).json({
-      job_id: jobId,
-      file_count: req.files.length,
+      job_id:      jobId,
+      file_count:  req.files.length,
+      urgency_level,
+      pricing: {
+        base_total:        pricing.baseTotal,
+        urgency_extra:     pricing.urgencyExtra,
+        grand_total:       pricing.grandTotal,
+        urgency_multiplier: multiplier,
+        breakdown:         pricing.breakdown,
+      },
       message: "Files uploaded and job created",
     });
   } catch (err) {
@@ -139,7 +246,7 @@ export const getJobById = async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT id, status, created_at
+      `SELECT id, status, urgency_level, created_at
        FROM print_jobs
        WHERE id = $1`,
       [id]
@@ -254,11 +361,9 @@ export const regenerateOtp = async (req, res) => {
   try {
     //check job exists and is READY
     const result = await pool.query(
-      `
-      SELECT id, status
-      FROM print_jobs
-      WHERE id = $1 AND status = 'READY'
-      `,
+      `SELECT id, status
+       FROM print_jobs
+       WHERE id = $1 AND status = 'READY'`,
       [id]
     );
 
@@ -278,44 +383,49 @@ export const regenerateOtp = async (req, res) => {
 
 export const collectPrintJob = async (req, res) => {
   const { otp } = req.body;
-  const jobId = req.params.id;
+  const jobId   = req.params.id;
 
   if (!otp) {
     return res.status(400).json({ error: "OTP is required" });
   }
 
-  const redisOtp = await redisClient.get(`job:${jobId}:otp`);
-
-  if (!redisOtp || redisOtp !== otp) {
-    return res.status(400).json({ error: "Invalid or expired OTP" });
-  }
-
   try {
-    const result = await pool.query(
-      `
-      UPDATE print_jobs
-      SET status = 'COLLECTED'
-      WHERE id = $1 AND status = 'READY'
-      RETURNING user_id
-      `,
+    // 1. Check job is READY and belongs to user
+    const jobResult = await pool.query(
+      `SELECT id, status, user_id
+       FROM print_jobs
+       WHERE id = $1 AND status = 'READY'`,
       [jobId]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(400).json({ error: "Invalid OTP or job not ready" });
+    if (jobResult.rows.length === 0) {
+      return res.status(404).json({ error: "Job not found or not ready for collection" });
     }
 
-    const userId = result.rows[0].user_id;
+    // 2. Verify OTP from Redis
+    const storedOtp = await redisClient.get(`job:${jobId}:otp`);
 
-    res.json({ message: "Print job collected successfully" });
+    if (!storedOtp || storedOtp !== otp) {
+      return res.status(400).json({ error: "Invalid or expired OTP" });
+    }
 
-    // Cleanup: remove OTP and remove this specific job from the user's active set
+    const job = jobResult.rows[0];
+
+    // 3. Mark as COLLECTED
+    await pool.query(
+      "UPDATE print_jobs SET status = 'COLLECTED' WHERE id = $1",
+      [jobId]
+    );
+
+    // 4. Delete OTP from Redis — one-time use
     await redisClient.del(`job:${jobId}:otp`);
-    if (userId) {
-      await redisClient.sRem(`user:${userId}:activeJobs`, jobId); // ✅ remove only this job from Set
-    }
+
+    // 5. Remove from user's active jobs set in Redis
+    await redisClient.sRem(`user:${job.user_id}:activeJobs`, jobId);
+
+    res.json({ message: "Job collected successfully" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to collect print job" });
+    console.error("COLLECT ERROR:", err.message);
+    res.status(500).json({ error: "Failed to collect job" });
   }
 };

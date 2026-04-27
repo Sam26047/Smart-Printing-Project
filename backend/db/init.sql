@@ -1,3 +1,4 @@
+-- backend/db/init.sql
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; --postgres is like a core engine+plugins system
 --so this is basicallu uuid generation plugin
 
@@ -67,3 +68,25 @@ ALTER TABLE print_jobs
 DROP COLUMN copies,
 DROP COLUMN color,
 DROP COLUMN double_sided;
+
+-- ─── Phase: Priority levels + smart pricing ──────────────────────────────────
+
+-- urgency_level replaces the free-form deadline for user-facing priority selection.
+-- NORMAL → no surcharge | SOON (+20%) → 2–4 hrs | URGENT (+50/80%) → 30–60 mins
+ALTER TABLE print_jobs
+ADD COLUMN IF NOT EXISTS urgency_level TEXT NOT NULL DEFAULT 'NORMAL'
+  CHECK (urgency_level IN ('NORMAL', 'SOON', 'URGENT'));
+
+-- Track urgent job submissions per user for abuse protection:
+--   • max 2 URGENT jobs per user per 24 hours
+--   • 1-hour cooldown between URGENT submissions
+-- Each row = one URGENT job submitted by that user
+CREATE TABLE IF NOT EXISTS urgency_usage (
+  id        UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  used_at   TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Index so the abuse-check query (WHERE user_id = X AND used_at > ...) is fast
+CREATE INDEX IF NOT EXISTS idx_urgency_usage_user_time
+  ON urgency_usage (user_id, used_at DESC);

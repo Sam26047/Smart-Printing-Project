@@ -18,9 +18,16 @@ const regenerateOtp = (id) => {
   return apiClient.post(`/print-jobs/${id}/regenerate-otp`, {});
 };
 
+// Fetches current queue size and whether urgent is disabled (peak load check)
+// Used by UploadForm to show queue position and grey-out Urgent when needed
+const getQueueStatus = () => {
+  return apiClient.get("/print-jobs/queue/status");
+};
+
 export default {
   createPrintJob,
   getJobById,
   collectPrintJob,
   regenerateOtp,
+  getQueueStatus,
 };

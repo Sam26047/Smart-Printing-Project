@@ -9,7 +9,7 @@ async function generateOTP(jobId) {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   await redisClient.setEx(`job:${jobId}:otp`, 600, otp);
 
-    // Look up the user's email from the job and send OTP
+  // Look up the user's email from the job and send OTP
   try {
     const result = await pool.query(
       `SELECT u.email FROM print_jobs j
@@ -38,30 +38,38 @@ async function printerWorker() {
 
   while (true) {
     try {
-        //1. Find next job to print
-
-        //first sort by priority then assign 1 to the jobs with deadline not null so they get higher priority
-        //then sort by smallest deadline then sort by fifo for fairness using created_at
-
+      // ─── Find next job to print ──────────────────────────────────────────
+      // Priority score formula:
+      //   urgency_weight  — URGENT=100, SOON=50, NORMAL=0
+      //   + priority      — admin manual override (integer, higher = sooner)
+      //   + waiting_bonus — 1 point per minute in queue (rewards patience,
+      //                     so old NORMAL jobs eventually catch up to new URGENT ones)
+      //
+      // Replaces the old ORDER BY priority/deadline approach with a single
+      // unified score so all three factors compete on the same scale.
       const result = await pool.query(
-        `
-        SELECT id
-        FROM print_jobs
-        WHERE status = 'QUEUED'
-        ORDER BY
-          priority DESC,
-          CASE
-            WHEN deadline IS NULL THEN 1
-            ELSE 0
-          END,
-          deadline ASC,
-          created_at ASC
-        LIMIT 1
-        `
+        `SELECT id
+         FROM print_jobs
+         WHERE status = 'QUEUED'
+         ORDER BY (
+           -- Urgency weight (from priority level chosen by user)
+           CASE urgency_level
+             WHEN 'URGENT' THEN 100
+             WHEN 'SOON'   THEN 50
+             ELSE               0
+           END
+           -- Admin manual priority (drag-and-drop in AdminJobRow)
+           + priority
+           -- Waiting time bonus: 1 point per minute queued
+           -- Prevents starvation — a NORMAL job waiting long enough will
+           -- eventually overtake a freshly submitted SOON job
+           + EXTRACT(EPOCH FROM (NOW() - created_at)) / 60.0
+         ) DESC
+         LIMIT 1`
       );
 
       if (result.rows.length === 0) {
-        //No jobs-> wait and retry
+        //No jobs → wait and retry
         await sleep(3000);
         continue;
       }
@@ -82,11 +90,9 @@ async function printerWorker() {
       const otp = await generateOTP(jobId);
 
       await pool.query(
-        `
-        UPDATE print_jobs
-        SET status = 'READY'
-        WHERE id = $1
-        `,
+        `UPDATE print_jobs
+         SET status = 'READY'
+         WHERE id = $1`,
         [jobId]
       );
 

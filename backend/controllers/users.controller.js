@@ -40,20 +40,19 @@ export const updateUserRole = async (req, res) => {
 
 export const getUserJobs = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId     = req.user.id;
     const activeOnly = req.query.active === "true";
-    // 2️⃣ choose SQL
+
+    // urgency_level added so JobHistory and JobStatus can display the priority badge
     const query = activeOnly
-      ? `SELECT id, status, priority, deadline, created_at
+      ? `SELECT id, status, priority, urgency_level, created_at
          FROM print_jobs WHERE user_id = $1 AND status NOT IN ('COLLECTED')
          ORDER BY created_at DESC`
-      : `SELECT id, status, priority, deadline, created_at
+      : `SELECT id, status, priority, urgency_level, created_at
          FROM print_jobs WHERE user_id = $1
          ORDER BY created_at DESC`;
-    
-    // 3️⃣ EXECUTE query
+
     const result = await pool.query(query, [userId]);
-    // 4️⃣ return data
     res.json({ jobs: result.rows });
   } catch (err) {
     console.error("FETCH USER JOBS ERROR:", err.message);

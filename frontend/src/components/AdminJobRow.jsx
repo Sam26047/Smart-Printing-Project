@@ -18,20 +18,31 @@ function StatusBadge({ status }) {
   );
 }
 
-function formatDeadline(deadline) {
-  if (!deadline) return "—";
-  const d      = new Date(deadline);
-  const diffMs = d - Date.now();
-  const diffMin = Math.round(diffMs / 60000);
-  const formatted = d.toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-  if (diffMs < 0)    return <span style={{ color: "var(--rose)" }}>{formatted} ⚠ overdue</span>;
-  if (diffMin < 30)  return <span style={{ color: "var(--amber-dark)" }}>{formatted} · {diffMin}m left ⚠</span>;
-  return formatted;
+// Urgency pill — replaces the old deadline cell
+// Uses CSS variables from index.css for colours
+function UrgencyBadge({ level }) {
+  const map = {
+    URGENT: { emoji: "🔴", label: "urgent", color: "var(--rose-dark)",  bg: "var(--rose-lite)",  border: "#fca5a5" },
+    SOON:   { emoji: "🟡", label: "soon",   color: "var(--amber-dark)", bg: "var(--amber-lite)", border: "#fbbf24" },
+    NORMAL: { emoji: "🟢", label: "normal", color: "var(--teal-dark)",  bg: "var(--teal-lite)",  border: "#5eead4" },
+  };
+  const u = map[level] || map.NORMAL;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      padding: "2px 8px", borderRadius: 20,
+      fontFamily: "var(--mono)", fontSize: 10, fontWeight: 500, letterSpacing: "0.05em",
+      color: u.color, background: u.bg, border: `0.5px solid ${u.border}`,
+      whiteSpace: "nowrap",
+    }}>
+      {u.emoji} {u.label}
+    </span>
+  );
 }
 
 export default function AdminJobRow({ job, onUpdate }) {
-  const [loading, setLoading]       = useState(false);
-  const [priority, setPriority]     = useState(job.priority ?? 0);
+  const [loading, setLoading]   = useState(false);
+  const [priority, setPriority] = useState(job.priority ?? 0);
 
   const nextStatus = NEXT_STATUS[job.status];
   const canAdvance = !!nextStatus;
@@ -85,6 +96,7 @@ export default function AdminJobRow({ job, onUpdate }) {
 
       <td><StatusBadge status={job.status} /></td>
 
+      {/* Manual priority override — admin can bump a job up/down within the queue */}
       <td>
         {job.status === "QUEUED" ? (
           <div className="priority-ctrl">
@@ -97,8 +109,9 @@ export default function AdminJobRow({ job, onUpdate }) {
         )}
       </td>
 
-      <td style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
-        {formatDeadline(job.deadline)}
+      {/* Urgency level — replaces the old free-form deadline column */}
+      <td>
+        <UrgencyBadge level={job.urgency_level || "NORMAL"} />
       </td>
 
       <td>

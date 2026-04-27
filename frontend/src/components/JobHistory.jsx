@@ -12,9 +12,30 @@ function StatusBadge({ status }) {
   );
 }
 
+// Urgency pill — mirrors UrgencyBadge in AdminJobRow
+function UrgencyBadge({ level }) {
+  const map = {
+    URGENT: { emoji: "🔴", label: "urgent", color: "var(--rose-dark)",  bg: "var(--rose-lite)",  border: "#fca5a5" },
+    SOON:   { emoji: "🟡", label: "soon",   color: "var(--amber-dark)", bg: "var(--amber-lite)", border: "#fbbf24" },
+    NORMAL: { emoji: "🟢", label: "normal", color: "var(--teal-dark)",  bg: "var(--teal-lite)",  border: "#5eead4" },
+  };
+  const u = map[level] || map.NORMAL;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      padding: "2px 8px", borderRadius: 20,
+      fontFamily: "var(--mono)", fontSize: 10, fontWeight: 500, letterSpacing: "0.05em",
+      color: u.color, background: u.bg, border: `0.5px solid ${u.border}`,
+      whiteSpace: "nowrap",
+    }}>
+      {u.emoji} {u.label}
+    </span>
+  );
+}
+
 function timeAgo(dateStr) {
   if (!dateStr) return "—";
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff  = Date.now() - new Date(dateStr).getTime();
   const mins  = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
   const days  = Math.floor(diff / 86400000);
@@ -26,8 +47,8 @@ function timeAgo(dateStr) {
 
 export default function JobHistory() {
   const { historyVersion } = useAuth(); //to keep job history updated after a job collected
-  const [jobs, setJobs]     = useState([]);
-  const [error, setError]   = useState(null);
+  const [jobs, setJobs]       = useState([]);
+  const [error, setError]     = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -49,7 +70,7 @@ export default function JobHistory() {
             <th>job id</th>
             <th>files</th>
             <th>status</th>
-            <th>deadline</th>
+            <th>urgency</th>{/* ← replaces old "deadline" header */}
             <th>submitted</th>
           </tr>
         </thead>
@@ -71,11 +92,8 @@ export default function JobHistory() {
                   )}
                 </td>
                 <td><StatusBadge status={job.status} /></td>
-                <td style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--gray)" }}>
-                  {job.deadline
-                    ? new Date(job.deadline).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
-                    : "—"}
-                </td>
+                {/* Urgency badge replaces old deadline timestamp */}
+                <td><UrgencyBadge level={job.urgency_level || "NORMAL"} /></td>
                 <td style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--gray)" }}>
                   {timeAgo(job.created_at)}
                 </td>

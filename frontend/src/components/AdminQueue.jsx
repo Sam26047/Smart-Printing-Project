@@ -15,9 +15,9 @@ function SearchIcon() {
 }
 
 export default function AdminQueue() {
-  const [jobs, setJobs]               = useState([]);
+  const [jobs, setJobs]                 = useState([]);
   const [filterStatus, setFilterStatus] = useState("ALL");
-  const [search, setSearch]           = useState("");
+  const [search, setSearch]             = useState("");
 
   const fetchJobs = () => {
     adminJobs.getAllJobs()
@@ -102,7 +102,7 @@ export default function AdminQueue() {
                 <th>files</th>
                 <th>status</th>
                 <th>priority</th>
-                <th>deadline</th>
+                <th>urgency</th>{/* ← replaces old "deadline" header */}
                 <th>action</th>
               </tr>
             </thead>

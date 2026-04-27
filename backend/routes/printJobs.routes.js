@@ -33,6 +33,13 @@ const upload = multer({
 
 // Routes
 router.get("/", authenticate, requireAdmin, printJobsController.getAllJobs);
+
+// ─── Queue status — no auth needed ───────────────────────────────────────────
+// Returns { queue_size, urgent_disabled } so the frontend can:
+//   • show "You are #N in queue"
+//   • grey-out the Urgent option if peak load is active
+router.get("/queue/status", printJobsController.getQueueStatus);
+
 router.post(  //only logged in users can create jobs now 
   "/",
   authenticate,

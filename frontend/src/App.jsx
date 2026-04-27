@@ -8,6 +8,7 @@ import AdminQueue from "./components/AdminQueue";
 import AdminUsers from "./components/AdminUsers";
 import LoginForm from "./components/LoginForm";
 import RegisterForm from "./components/RegisterForm";
+import WelcomePage from "./components/WelcomePage";
 
 // ── Navbar ────────────────────────────────────────────────
 function Navbar({ user, logout }) {
@@ -31,8 +32,8 @@ function Navbar({ user, logout }) {
 }
 
 // ── Tab Nav ───────────────────────────────────────────────
-const USER_TABS  = ["submit job", "my jobs"];
-const ADMIN_TABS = ["submit job", "my jobs", "admin queue", "admin users"];
+const USER_TABS  = ["home", "submit job", "my jobs"];
+const ADMIN_TABS = ["home", "submit job", "my jobs", "admin queue", "admin users"];
 
 function TabNav({ tabs, active, onSelect }) {
   return (
@@ -54,9 +55,14 @@ function TabNav({ tabs, active, onSelect }) {
 export default function App() {
   const { user, activeJobIds, handleRegister, handleLogin, logout } = useAuth();
   const [showRegister, setShowRegister] = useState(false);
-  const [activeTab, setActiveTab]       = useState("submit job");
+
+  // Start on "home" so new users see the welcome/explainer page first
+  const [activeTab, setActiveTab] = useState("home");
 
   const tabs = user?.role === "ADMIN" ? ADMIN_TABS : USER_TABS;
+
+  // "Get Started" on WelcomePage jumps straight to Submit Job tab
+  const handleGetStarted = () => setActiveTab("submit job");
 
   if (!user) { //if not existing user give login and register form
     return (
@@ -105,6 +111,11 @@ export default function App() {
       <TabNav tabs={tabs} active={activeTab} onSelect={setActiveTab} />
 
       <main className="page-content">
+
+        {/* WelcomePage receives onGetStarted so its CTA button navigates to submit job */}
+        {activeTab === "home" && (
+          <WelcomePage onGetStarted={handleGetStarted} />
+        )}
 
         {activeTab === "submit job" && (
           <>
@@ -158,6 +169,7 @@ export default function App() {
             <AdminUsers />
           </>
         )}
+
       </main>
     </div>
   );
