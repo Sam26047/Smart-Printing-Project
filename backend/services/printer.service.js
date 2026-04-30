@@ -1,5 +1,5 @@
 // backend/services/printer.service.js
-import ipp from "node-ipp";
+import ipp from "ipp";
 import fs from "fs";
 
 const PRINTER_URI = process.env.PRINTER_URI;
