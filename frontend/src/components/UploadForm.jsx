@@ -284,8 +284,8 @@ function UploadForm() {
             {/* After the double_sided <select> */}
             <select
               className="file-select"
-              value={fileSettings[i]?.orientation || "portrait"}
-              onChange={(e) => updateSetting(i, "orientation", e.target.value)}
+              value={fileSettings[index]?.orientation || "portrait"}
+              onChange={(e) => updateFileSetting(i, "orientation", e.target.value)}
             >
               <option value="portrait">Portrait</option>
               <option value="landscape">Landscape</option>
@@ -293,8 +293,8 @@ function UploadForm() {
 
             <select
               className="file-select"
-              value={fileSettings[i]?.paper_size || "A4"}
-              onChange={(e) => updateSetting(i, "paper_size", e.target.value)}
+              value={fileSettings[index]?.paper_size || "A4"}
+              onChange={(e) => updateFileSetting(i, "paper_size", e.target.value)}
             >
               <option value="A4">A4</option>
               <option value="Letter">Letter</option>
