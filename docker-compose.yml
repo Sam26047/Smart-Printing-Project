@@ -17,8 +17,8 @@ services:
       EMAIL_USER: ${EMAIL_USER}
       EMAIL_PASS: ${EMAIL_PASS}
       EMAIL_FROM: ${EMAIL_FROM}
-      PRINTER_URI: ipp://192.168.x.x:631/ipp/print   # your Epson's IP
-      PRINTER_MOCK: "false"        # set "true" to test without printer
+      PRINTER_URI: ${PRINTER_URI}
+      PRINTER_MOCK: ${PRINTER_MOCK}
     depends_on:
       - postgres
     volumes:
