@@ -3,7 +3,13 @@ import { useState, useEffect } from "react";
 import printJobService from "../services/printJobs";
 import { useAuth } from "../hooks/useAuth";
 
-const DEFAULT_FILE_SETTINGS = { copies: 1, color: false, double_sided: false };
+const DEFAULT_FILE_SETTINGS = {
+  copies: 1,
+  color: false,
+  double_sided: false,
+  orientation: "portrait",  
+  paper_size: "A4",          
+};
 
 // ─── Pricing constants (mirror backend/utils/pricing.js) ─────────────────────
 // Kept in sync manually — Phase 4 can fetch these from a /pricing/config endpoint
@@ -274,6 +280,25 @@ function UploadForm() {
             >
               <option value="single">Single sided</option>
               <option value="double">Double sided</option>
+            </select>
+            {/* After the double_sided <select> */}
+            <select
+              className="file-select"
+              value={fileSettings[i]?.orientation || "portrait"}
+              onChange={(e) => updateSetting(i, "orientation", e.target.value)}
+            >
+              <option value="portrait">Portrait</option>
+              <option value="landscape">Landscape</option>
+            </select>
+
+            <select
+              className="file-select"
+              value={fileSettings[i]?.paper_size || "A4"}
+              onChange={(e) => updateSetting(i, "paper_size", e.target.value)}
+            >
+              <option value="A4">A4</option>
+              <option value="Letter">Letter</option>
+              <option value="A3">A3</option>
             </select>
 
             {/* Remove file */}

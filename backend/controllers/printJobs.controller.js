@@ -204,16 +204,21 @@ export const createPrintJob = async (req, res) => {
     const insertFilesPromises = req.files.map((file, index) => {
       const s = settings[index] || {};
 
-      // fallback defaults if settings missing
-      const copies      = parseInt(s.copies) || 1;
-      const color       = s.color === true || s.color === "true";
+      const copies       = parseInt(s.copies) || 1;
+      const color        = s.color === true || s.color === "true";
       const double_sided = s.double_sided === true || s.double_sided === "true";
+      const orientation  = ["portrait", "landscape"].includes(s.orientation)
+                            ? s.orientation
+                            : "portrait";
+      const paper_size   = ["A4", "Letter", "A3"].includes(s.paper_size)
+                            ? s.paper_size
+                            : "A4";
 
       return pool.query(
         `INSERT INTO job_files
-          (job_id, file_name, file_path, copies, color, double_sided)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [jobId, file.originalname, file.path, copies, color, double_sided]
+          (job_id, file_name, file_path, copies, color, double_sided, orientation, paper_size)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [jobId, file.originalname, file.path, copies, color, double_sided, orientation, paper_size]
       );
     });
 

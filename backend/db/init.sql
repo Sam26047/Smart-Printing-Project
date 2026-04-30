@@ -90,3 +90,8 @@ CREATE TABLE IF NOT EXISTS urgency_usage (
 -- Index so the abuse-check query (WHERE user_id = X AND used_at > ...) is fast
 CREATE INDEX IF NOT EXISTS idx_urgency_usage_user_time
   ON urgency_usage (user_id, used_at DESC);
+
+-- Only these two columns are missing from job_files
+ALTER TABLE job_files
+ADD COLUMN IF NOT EXISTS orientation TEXT NOT NULL DEFAULT 'portrait',
+ADD COLUMN IF NOT EXISTS paper_size  TEXT NOT NULL DEFAULT 'A4';
