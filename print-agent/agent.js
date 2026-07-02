@@ -22,7 +22,9 @@ import fetch from "node-fetch";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { print } from "pdf-to-printer";
+import pkg from "pdf-to-printer";
+
+const { print } = pkg;
 
 const BACKEND_URL  = process.env.BACKEND_URL;   // e.g. http://your-vps-ip:5000
 const AGENT_SECRET = process.env.AGENT_SECRET;  // must match backend .env
