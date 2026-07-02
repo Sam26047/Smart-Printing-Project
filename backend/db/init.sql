@@ -95,3 +95,9 @@ CREATE INDEX IF NOT EXISTS idx_urgency_usage_user_time
 ALTER TABLE job_files
 ADD COLUMN IF NOT EXISTS orientation TEXT NOT NULL DEFAULT 'portrait',
 ADD COLUMN IF NOT EXISTS paper_size  TEXT NOT NULL DEFAULT 'A4';
+
+--add orientation and paper_size to job_files (safe to run multiple times)
+
+ALTER TABLE job_files
+  ADD COLUMN IF NOT EXISTS orientation TEXT NOT NULL DEFAULT 'portrait',
+  ADD COLUMN IF NOT EXISTS paper_size  TEXT NOT NULL DEFAULT 'A4';
