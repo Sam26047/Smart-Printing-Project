@@ -101,3 +101,62 @@ ADD COLUMN IF NOT EXISTS paper_size  TEXT NOT NULL DEFAULT 'A4';
 ALTER TABLE job_files
   ADD COLUMN IF NOT EXISTS orientation TEXT NOT NULL DEFAULT 'portrait',
   ADD COLUMN IF NOT EXISTS paper_size  TEXT NOT NULL DEFAULT 'A4';
+
+-- ─── Phase: Multi-tenant shops + per-shop agent tokens ────────────────────────
+
+-- One row per print shop (tenant). fulfillment:
+--   AGENT   → jobs printed by a physical Windows print agent polling /agent/*
+--   VIRTUAL → demo shop: jobs fulfilled by a cloud virtual-printer worker that
+--             authenticates with an agent token exactly like a real agent
+CREATE TABLE IF NOT EXISTS shops (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name        TEXT NOT NULL,
+  slug        TEXT UNIQUE NOT NULL,
+  fulfillment TEXT NOT NULL DEFAULT 'AGENT'
+    CHECK (fulfillment IN ('AGENT', 'VIRTUAL')),
+  created_at  TIMESTAMP DEFAULT NOW()
+);
+
+-- Per-shop device tokens for /agent/* auth (replaces the global AGENT_SECRET).
+-- Token format: pfa_<id>.<secret>; only sha256(secret) is stored, plaintext is
+-- shown once at issuance. Multiple live tokens per shop → zero-downtime
+-- rotation now, multi-device/multi-printer later.
+CREATE TABLE IF NOT EXISTS agent_tokens (
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shop_id      UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL,
+  label        TEXT,                      -- e.g. 'Front desk PC'
+  last_used_at TIMESTAMP,                 -- updated on agent polls (lazy later)
+  revoked_at   TIMESTAMP,                 -- NULL = active
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tokens_shop ON agent_tokens (shop_id);
+
+-- shop_id on jobs is THE routing key: agent polling, queue scoping, admin views
+ALTER TABLE print_jobs
+ADD COLUMN IF NOT EXISTS shop_id UUID REFERENCES shops(id);
+
+-- Admins: the shop they run. Students: NULL (they pick a shop per job).
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS shop_id UUID REFERENCES shops(id) ON DELETE SET NULL;
+
+-- Backfill: create the default shop, attach all existing jobs + admin users
+INSERT INTO shops (name, slug)
+SELECT 'Default Shop', 'default'
+WHERE NOT EXISTS (SELECT 1 FROM shops WHERE slug = 'default');
+
+UPDATE print_jobs
+SET shop_id = (SELECT id FROM shops WHERE slug = 'default')
+WHERE shop_id IS NULL;
+
+UPDATE users
+SET shop_id = (SELECT id FROM shops WHERE slug = 'default')
+WHERE role = 'ADMIN' AND shop_id IS NULL;
+
+-- Composite index for the hot per-shop queries (agent poll, queue size)
+CREATE INDEX IF NOT EXISTS idx_print_jobs_shop_status
+  ON print_jobs (shop_id, status);
+
+-- Run only after createPrintJob passes shop_id on INSERT (done — applied 2026-07-06)
+ALTER TABLE print_jobs ALTER COLUMN shop_id SET NOT NULL;

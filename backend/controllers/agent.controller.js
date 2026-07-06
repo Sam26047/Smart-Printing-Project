@@ -1,25 +1,18 @@
 // backend/controllers/agent.controller.js
-// These endpoints are called by the local Windows print agent running on the shop PC.
-// They are NOT for browser clients — they use a shared AGENT_SECRET header for auth.
+// These endpoints are called by a shop's print agent (or the demo shop's cloud
+// virtual-printer worker). They are NOT for browser clients — auth is a
+// per-shop device token (x-agent-token, see middleware/agentAuth.js), which
+// attaches req.shop. Every query here MUST filter on req.shop.id so one shop's
+// agent can never see, download, complete, or fail another shop's jobs.
 
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
 import { sendOTPEmail } from "../services/emailService.js";
-import config from "../config/config.js";
 import path from "path";
 import fs from "fs";
 
-// ── Shared-secret middleware ──────────────────────────────────────────────────
-export function requireAgentSecret(req, res, next) {
-  const secret = req.headers["x-agent-secret"];
-  if (!secret || secret !== config.agentSecret) {
-    return res.status(401).json({ error: "Invalid agent secret" });
-  }
-  next();
-}
-
 // ── GET /agent/jobs/printing ──────────────────────────────────────────────────
-// Returns all jobs currently in PRINTING status with their files.
+// Returns the calling shop's jobs currently in PRINTING status with their files.
 // The agent polls this to know what it should be printing.
 export const getPrintingJobs = async (req, res) => {
   try {
@@ -44,9 +37,10 @@ export const getPrintingJobs = async (req, res) => {
          ) FILTER (WHERE f.id IS NOT NULL) AS files
        FROM print_jobs j
        LEFT JOIN job_files f ON j.id = f.job_id
-       WHERE j.status = 'PRINTING'
+       WHERE j.status = 'PRINTING' AND j.shop_id = $1
        GROUP BY j.id
-       ORDER BY j.created_at ASC`
+       ORDER BY j.created_at ASC`,
+      [req.shop.id]
     );
     res.json({ jobs: result.rows });
   } catch (err) {
@@ -65,8 +59,9 @@ export const downloadJobFile = async (req, res) => {
       `SELECT f.file_path, f.file_name
        FROM job_files f
        JOIN print_jobs j ON j.id = f.job_id
-       WHERE f.id = $1 AND j.id = $2 AND j.status = 'PRINTING'`,
-      [fileId, jobId]
+       WHERE f.id = $1 AND j.id = $2 AND j.status = 'PRINTING'
+         AND j.shop_id = $3`,
+      [fileId, jobId, req.shop.id]
     );
 
     if (result.rows.length === 0) {
@@ -97,10 +92,12 @@ export const agentComplete = async (req, res) => {
   const { jobId } = req.params;
 
   try {
-    // Only complete jobs that are actually in PRINTING state
+    // Only complete jobs that are actually in PRINTING state AND belong to
+    // the calling shop
     const check = await pool.query(
-      `SELECT id FROM print_jobs WHERE id = $1 AND status = 'PRINTING'`,
-      [jobId]
+      `SELECT id FROM print_jobs
+       WHERE id = $1 AND status = 'PRINTING' AND shop_id = $2`,
+      [jobId, req.shop.id]
     );
 
     if (check.rows.length === 0) {
@@ -158,9 +155,9 @@ export const agentFail = async (req, res) => {
     const result = await pool.query(
       `UPDATE print_jobs
        SET status = 'QUEUED'
-       WHERE id = $1 AND status = 'PRINTING'
+       WHERE id = $1 AND status = 'PRINTING' AND shop_id = $2
        RETURNING id`,
-      [jobId]
+      [jobId, req.shop.id]
     );
 
     if (result.rows.length === 0) {

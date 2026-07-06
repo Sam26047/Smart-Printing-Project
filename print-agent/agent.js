@@ -27,18 +27,18 @@ import pkg from "pdf-to-printer";
 const { print } = pkg;
 
 const BACKEND_URL  = process.env.BACKEND_URL;   // e.g. http://your-vps-ip:5000
-const AGENT_SECRET = process.env.AGENT_SECRET;  // must match backend .env
+const AGENT_TOKEN  = process.env.AGENT_TOKEN;   // per-shop device token (pfa_...) issued via POST /shops/:shopId/agent-tokens
 const PRINTER_NAME = process.env.PRINTER_NAME;  // Windows printer name, e.g. "EPSON L3000 Series"
 const POLL_MS      = Number(process.env.POLL_MS) || 5000;
 
-if (!BACKEND_URL || !AGENT_SECRET || !PRINTER_NAME) {
-  console.error("❌  Missing required env vars: BACKEND_URL, AGENT_SECRET, PRINTER_NAME");
+if (!BACKEND_URL || !AGENT_TOKEN || !PRINTER_NAME) {
+  console.error("❌  Missing required env vars: BACKEND_URL, AGENT_TOKEN, PRINTER_NAME");
   process.exit(1);
 }
 
 const headers = {
   "Content-Type": "application/json",
-  "x-agent-secret": AGENT_SECRET,
+  "x-agent-token": AGENT_TOKEN,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

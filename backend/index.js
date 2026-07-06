@@ -6,6 +6,7 @@ import authRoutes from "./routes/auth.routes.js";
 import usersRoutes from "./routes/users.routes.js";
 import printJobsRoutes from "./routes/printJobs.routes.js";
 import agentRoutes from "./routes/agent.routes.js";
+import shopsRoutes from "./routes/shops.routes.js";
 
 const app = express();
 
@@ -16,7 +17,8 @@ app.use(express.json());
 app.use("/", authRoutes);              // /login, /register
 app.use("/users", usersRoutes);        // /users, /users/me/jobs, etc. i.e mounts router paths on /users prefix path
 app.use("/print-jobs", printJobsRoutes);
-app.use("/agent", agentRoutes);        // /agent/* — local print agent only
+app.use("/agent", agentRoutes);        // /agent/* — print agents only (per-shop token)
+app.use("/shops", shopsRoutes);        // /shops/:shopId/agent-tokens — admin token management
 
 app.get("/", (req, res) => {
   res.send("Backend is alive 🚀");

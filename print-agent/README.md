@@ -32,10 +32,13 @@ Open **Control Panel → Devices and Printers**, right-click the Epson L3000, an
 ```bash
 cd print-agent
 copy .env.example .env   # Windows
-# Edit .env: fill BACKEND_URL, AGENT_SECRET, PRINTER_NAME
+# Edit .env: fill BACKEND_URL, AGENT_TOKEN, PRINTER_NAME
 ```
 
-`AGENT_SECRET` must match the `AGENT_SECRET` value in your backend `.env`.
+`AGENT_TOKEN` is this shop's device token, issued once by the backend via
+`POST /shops/:shopId/agent-tokens` (log in as the shop's admin). It's shown
+only at issuance — store it straight into `.env`. Lost it? Issue a new one
+and revoke the old.
 
 ### 3. Install & run
 
@@ -66,7 +69,7 @@ node install-service.js   # (create this script yourself using node-windows docs
 
 | Symptom | Fix |
 |---|---|
-| `401 Invalid agent secret` | AGENT_SECRET in `.env` doesn't match backend |
+| `401 Invalid agent token` | AGENT_TOKEN in `.env` is wrong, revoked, or for another backend/shop |
 | `File not found or job not in PRINTING state` | Job may have already been completed or re-queued |
 | PDF opens in viewer instead of printing | Make sure `pdf-to-printer` can find your printer by exact name |
 | Jobs stay stuck in PRINTING | Check agent console — it will log errors and re-queue failed jobs |

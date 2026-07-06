@@ -39,16 +39,43 @@ async function generateOTP(jobId) {
   return otp;
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ─── Helper: get current QUEUED job count (used for dynamic pricing + peak check) ───
-async function getQueueSize() {
-  const result = await pool.query(
-    "SELECT COUNT(*) AS count FROM print_jobs WHERE status = 'QUEUED'"
-  );
+// Scoped per shop when shopId is given — one shop being slammed shouldn't
+// raise prices or disable URGENT at another shop.
+async function getQueueSize(shopId = null) {
+  const result = shopId
+    ? await pool.query(
+        "SELECT COUNT(*) AS count FROM print_jobs WHERE status = 'QUEUED' AND shop_id = $1",
+        [shopId]
+      )
+    : await pool.query(
+        "SELECT COUNT(*) AS count FROM print_jobs WHERE status = 'QUEUED'"
+      );
   return parseInt(result.rows[0].count) || 0;
+}
+
+// ─── Helper: the shop this admin runs (users.shop_id) ────────────────────────
+// Admin endpoints below are scoped to this shop so one shop's admin can never
+// see or touch another shop's jobs. Looked up fresh from the DB — the JWT
+// payload doesn't carry shop_id.
+async function getAdminShopId(userId) {
+  const result = await pool.query(
+    "SELECT shop_id FROM users WHERE id = $1",
+    [userId]
+  );
+  return result.rows.length > 0 ? result.rows[0].shop_id : null;
 }
 
 export const getAllJobs = async (req, res) => {
   try {
+    const adminShopId = await getAdminShopId(req.user.id);
+    if (!adminShopId) {
+      return res.status(403).json({ error: "Admin is not assigned to a shop" });
+    }
+
     const result = await pool.query(
       `SELECT
         j.id,
@@ -67,12 +94,14 @@ export const getAllJobs = async (req, res) => {
         ) FILTER (WHERE f.file_name IS NOT NULL) AS files
       FROM print_jobs j
       LEFT JOIN job_files f ON j.id = f.job_id
+      WHERE j.shop_id = $1
       GROUP BY j.id
       ORDER BY
         j.priority DESC,
         CASE WHEN j.deadline IS NULL THEN 1 ELSE 0 END,
         j.deadline ASC,
-        j.created_at ASC`
+        j.created_at ASC`,
+      [adminShopId]
     );
     res.json({ jobs: result.rows });
   } catch (err) {
@@ -86,7 +115,11 @@ export const getAllJobs = async (req, res) => {
 // Frontend uses this to show "You are #N in queue" and grey-out urgent if needed.
 export const getQueueStatus = async (req, res) => {
   try {
-    const queueSize = await getQueueSize();
+    // Optional ?shop_id=... scopes the numbers to one shop; without it the
+    // count stays global so the current frontend keeps working unchanged.
+    const { shop_id } = req.query;
+    const shopId = shop_id && UUID_RE.test(shop_id) ? shop_id : null;
+    const queueSize = await getQueueSize(shopId);
     res.json({
       queue_size: queueSize,
       urgent_disabled: isUrgentDisabled(queueSize),
@@ -100,7 +133,7 @@ export const getQueueStatus = async (req, res) => {
 export const createPrintJob = async (req, res) => {
   try {
     // urgency_level replaces free-form deadline as the user-facing priority control
-    const { deadline, fileSettings, urgency_level = "NORMAL" } = req.body;
+    const { deadline, fileSettings, urgency_level = "NORMAL", shop_id } = req.body;
     const userId = req.user.id;
 
     // ✅ validation
@@ -121,8 +154,36 @@ export const createPrintJob = async (req, res) => {
       return res.status(400).json({ error: "Invalid fileSettings format" });
     }
 
+    // ─── Resolve target shop ──────────────────────────────────────────────────
+    // Students pick a shop per job. When exactly one shop exists (current
+    // single-campus case) it's auto-selected so the frontend needs no selector.
+    let shopId = shop_id || null;
+    if (shopId) {
+      if (!UUID_RE.test(shopId)) {
+        return res.status(400).json({ error: "Invalid shop_id" });
+      }
+      const shopCheck = await pool.query(
+        "SELECT id FROM shops WHERE id = $1",
+        [shopId]
+      );
+      if (shopCheck.rows.length === 0) {
+        return res.status(400).json({ error: "Shop not found" });
+      }
+    } else {
+      const shopsResult = await pool.query("SELECT id FROM shops");
+      if (shopsResult.rows.length === 1) {
+        shopId = shopsResult.rows[0].id;
+      } else {
+        return res
+          .status(400)
+          .json({ error: "shop_id is required when multiple shops exist" });
+      }
+    }
+
     // ─── Current queue size — needed for dynamic pricing + peak check ─────────
-    const queueSize = await getQueueSize();
+    // Scoped to the target shop: pricing pressure at one shop shouldn't leak
+    // into another.
+    const queueSize = await getQueueSize(shopId);
 
     // ─── Abuse protection (URGENT only) ──────────────────────────────────────
     if (urgency_level === "URGENT") {
@@ -188,10 +249,10 @@ export const createPrintJob = async (req, res) => {
     // 1️⃣ Create job — urgency_level stored alongside deadline for worker sorting
     // ❗ copies/color/double_sided moved to per-file level (job_files table)
     const jobResult = await pool.query(
-      `INSERT INTO print_jobs (user_id, status, deadline, urgency_level)
-       VALUES ($1, 'PENDING', $2, $3)
+      `INSERT INTO print_jobs (user_id, shop_id, status, deadline, urgency_level)
+       VALUES ($1, $2, 'PENDING', $3, $4)
        RETURNING id`,
-      [userId, deadline || null, urgency_level]
+      [userId, shopId, deadline || null, urgency_level]
     );
 
     const jobId = jobResult.rows[0].id;
@@ -281,13 +342,20 @@ export const updateJobStatus = async (req, res) => {
   };
 
   try {
-    // 1. Get current status + user email in one query
+    // Admins may only manage their own shop's jobs
+    const adminShopId = await getAdminShopId(req.user.id);
+    if (!adminShopId) {
+      return res.status(403).json({ error: "Admin is not assigned to a shop" });
+    }
+
+    // 1. Get current status + user email in one query (scoped to admin's shop —
+    //    another shop's job looks like a plain 404)
     const current = await pool.query(
       `SELECT j.status, u.email
        FROM print_jobs j
        JOIN users u ON j.user_id = u.id
-       WHERE j.id = $1`,
-      [id]
+       WHERE j.id = $1 AND j.shop_id = $2`,
+      [id, adminShopId]
     );
 
     if (current.rows.length === 0) {
@@ -333,9 +401,15 @@ export const updateJobPriority = async (req, res) => {
   }
 
   try {
+    // Admins may only reorder their own shop's queue
+    const adminShopId = await getAdminShopId(req.user.id);
+    if (!adminShopId) {
+      return res.status(403).json({ error: "Admin is not assigned to a shop" });
+    }
+
     const current = await pool.query(
-      "SELECT status FROM print_jobs WHERE id = $1",
-      [id]
+      "SELECT status FROM print_jobs WHERE id = $1 AND shop_id = $2",
+      [id, adminShopId]
     );
 
     if (current.rows.length === 0) {
@@ -364,12 +438,14 @@ export const regenerateOtp = async (req, res) => {
   const { id } = req.params;
 
   try {
-    //check job exists and is READY
+    //check job exists, is READY, and belongs to the requesting user.
+    //NOTE: this is a student endpoint (frontend "Resend OTP"), not admin —
+    //so it's scoped by job ownership, not by shop.
     const result = await pool.query(
       `SELECT id, status
        FROM print_jobs
-       WHERE id = $1 AND status = 'READY'`,
-      [id]
+       WHERE id = $1 AND status = 'READY' AND user_id = $2`,
+      [id, req.user.id]
     );
 
     if (result.rows.length === 0) {

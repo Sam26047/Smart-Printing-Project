@@ -19,7 +19,6 @@ services:
       EMAIL_FROM: ${EMAIL_FROM}
       PRINTER_URI: ${PRINTER_URI}
       PRINTER_MOCK: ${PRINTER_MOCK}
-      AGENT_SECRET: ${AGENT_SECRET}
     depends_on:
       - postgres
     volumes:
