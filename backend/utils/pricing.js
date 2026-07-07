@@ -1,14 +1,10 @@
 // backend/utils/pricing.js
 // Central place for all pricing logic.
 // Keeps cost calculation out of the controller so it's easy to tune.
-
-// ─── Base rates (₹ per page) ────────────────────────────────────────────────
-export const RATES = {
-  BW_SINGLE: 1,       // B&W, single-sided
-  BW_DOUBLE: 0.8,     // B&W, double-sided (slight discount per sheet)
-  COLOR_SINGLE: 5,    // Color, single-sided
-  COLOR_DOUBLE: 4,    // Color, double-sided
-};
+//
+// Rates are PER SHOP now (shop_pricing table): a B&W per-page rate, a color
+// per-page rate, and an optional duplex discount percentage. Paper size is
+// NOT priced. The old hardcoded global RATES are gone.
 
 // ─── Urgency multipliers (dynamic — depend on queue size) ───────────────────
 // Queue thresholds that trigger higher urgency pricing
@@ -37,23 +33,30 @@ export function isUrgentDisabled(queueSize) {
 }
 
 // ─── Per-file cost (before urgency) ─────────────────────────────────────────
-// estimatedPages: we store 1 as placeholder until PDF.js page-count lands in Phase 4
-function pageRate(color, doubleSided) {
-  if (color)  return doubleSided ? RATES.COLOR_DOUBLE  : RATES.COLOR_SINGLE;
-  return              doubleSided ? RATES.BW_DOUBLE    : RATES.BW_SINGLE;
+// shopPricing: a shop_pricing row { bw_price_per_page, color_price_per_page,
+// duplex_discount_pct } — pg returns NUMERIC as strings, hence Number().
+export function pageRate(color, doubleSided, shopPricing) {
+  let rate = color
+    ? Number(shopPricing.color_price_per_page)
+    : Number(shopPricing.bw_price_per_page);
+  if (doubleSided) {
+    rate = rate * (1 - Number(shopPricing.duplex_discount_pct) / 100);
+  }
+  return rate;
 }
 
-// fileSettings: array of { copies, color, double_sided, estimated_pages? }
+// fileSettings: array of { copies, color, double_sided, page_count }
+// (page_count is the server-side pdf-lib count — authoritative, never client-sent)
 // Returns { baseTotal, urgencyExtra, grandTotal, breakdown[] }
-export function calculateJobCost(fileSettings, urgencyMultiplier) {
+export function calculateJobCost(fileSettings, urgencyMultiplier, shopPricing) {
   let baseTotal = 0;
 
   const breakdown = fileSettings.map((s, i) => {
     const copies         = parseInt(s.copies)       || 1;
     const color          = Boolean(s.color);
     const doubleSided    = Boolean(s.double_sided);
-    const estimatedPages = parseInt(s.estimated_pages) || 1; // Phase 4 will supply real count
-    const rate           = pageRate(color, doubleSided);
+    const estimatedPages = parseInt(s.page_count) || 1;
+    const rate           = pageRate(color, doubleSided, shopPricing);
     const fileCost       = rate * estimatedPages * copies;
 
     baseTotal += fileCost;

@@ -7,6 +7,7 @@ import usersRoutes from "./routes/users.routes.js";
 import printJobsRoutes from "./routes/printJobs.routes.js";
 import agentRoutes from "./routes/agent.routes.js";
 import shopsRoutes from "./routes/shops.routes.js";
+import printersRoutes from "./routes/printers.routes.js";
 
 const app = express();
 
@@ -18,7 +19,8 @@ app.use("/", authRoutes);              // /login, /register
 app.use("/users", usersRoutes);        // /users, /users/me/jobs, etc. i.e mounts router paths on /users prefix path
 app.use("/print-jobs", printJobsRoutes);
 app.use("/agent", agentRoutes);        // /agent/* — print agents only (per-shop token)
-app.use("/shops", shopsRoutes);        // /shops/:shopId/agent-tokens — admin token management
+app.use("/shops", shopsRoutes);        // /shops/pricing + /shops/:shopId/agent-tokens — admin
+app.use("/printers", printersRoutes);  // shopkeeper printer CRUD + status toggle
 
 app.get("/", (req, res) => {
   res.send("Backend is alive 🚀");

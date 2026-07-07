@@ -23,9 +23,16 @@ Customer gets OTP email → collects printout
 
 ## Setup
 
-### 1. Find your printer name
+### 1. Printer names
 
-Open **Control Panel → Devices and Printers**, right-click the Epson L3000, and note the exact name shown at the top (e.g. `EPSON L3000 Series`).
+Each file the agent downloads arrives with the Windows `device_name` of the
+printer the backend routed it to — the shopkeeper enters those names when
+registering printers in the dashboard. `PRINTER_NAME` in `.env` is only a
+**last-resort fallback** for files that arrive without a device_name.
+
+To find a printer's exact Windows name: **Control Panel → Devices and
+Printers**, right-click the printer, and note the name shown at the top
+(e.g. `EPSON L3000 Series`).
 
 ### 2. Configure
 

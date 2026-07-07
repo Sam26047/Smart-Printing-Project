@@ -1,4 +1,6 @@
 // backend/controllers/printJobs.controller.js
+import fs from "fs";
+import { PDFDocument } from "pdf-lib";
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
 import { sendOTPEmail, sendStatusEmail } from "../services/emailService.js";
@@ -9,6 +11,8 @@ import {
   URGENT_DAILY_LIMIT,
   URGENT_COOLDOWN_MS,
 } from "../utils/pricing.js";
+import { getAdminShopId } from "../utils/adminShop.js";
+import { attemptDispatch } from "../utils/routing.js";
 
 // Helper function for OTP generation — now also emails the user
 async function generateOTP(jobId) {
@@ -57,17 +61,8 @@ async function getQueueSize(shopId = null) {
   return parseInt(result.rows[0].count) || 0;
 }
 
-// ─── Helper: the shop this admin runs (users.shop_id) ────────────────────────
-// Admin endpoints below are scoped to this shop so one shop's admin can never
-// see or touch another shop's jobs. Looked up fresh from the DB — the JWT
-// payload doesn't carry shop_id.
-async function getAdminShopId(userId) {
-  const result = await pool.query(
-    "SELECT shop_id FROM users WHERE id = $1",
-    [userId]
-  );
-  return result.rows.length > 0 ? result.rows[0].shop_id : null;
-}
+// (getAdminShopId moved to utils/adminShop.js — now shared with the printers
+// and shop-pricing controllers)
 
 export const getAllJobs = async (req, res) => {
   try {
@@ -180,6 +175,46 @@ export const createPrintJob = async (req, res) => {
       }
     }
 
+    // ─── Shop pricing (per-shop rates; server is the source of truth) ─────────
+    const pricingRes = await pool.query(
+      `SELECT bw_price_per_page, color_price_per_page, duplex_discount_pct
+       FROM shop_pricing WHERE shop_id = $1`,
+      [shopId]
+    );
+    if (pricingRes.rows.length === 0) {
+      return res.status(400).json({ error: "Shop pricing not configured" });
+    }
+    const shopPricing = pricingRes.rows[0];
+
+    // ─── Server-authoritative page counts (pdf-lib) ───────────────────────────
+    // Done BEFORE the urgency checks so a corrupt upload can't burn an URGENT
+    // quota slot. A PDF we can't parse is a hard 400 and the uploads are
+    // removed — we never guess a page count.
+    const pageCounts = [];
+    for (const file of req.files) {
+      try {
+        const bytes = fs.readFileSync(file.path);
+        // ignoreEncryption: password-protected PDFs still have a readable page
+        // tree and usually print fine; truly corrupt files still throw.
+        const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+        pageCounts.push(doc.getPageCount());
+      } catch {
+        for (const f of req.files) {
+          try { fs.unlinkSync(f.path); } catch { /* already gone */ }
+        }
+        return res.status(400).json({
+          error: `Could not read "${file.originalname}" as a PDF — file may be corrupt`,
+        });
+      }
+    }
+
+    // One settings entry per uploaded file (files beyond the provided settings
+    // get defaults), each carrying its real page count for pricing.
+    settings = req.files.map((_, i) => ({
+      ...(settings[i] || {}),
+      page_count: pageCounts[i],
+    }));
+
     // ─── Current queue size — needed for dynamic pricing + peak check ─────────
     // Scoped to the target shop: pricing pressure at one shop shouldn't leak
     // into another.
@@ -242,17 +277,21 @@ export const createPrintJob = async (req, res) => {
     }
 
     // ─── Pricing calculation ─────────────────────────────────────────────────
-    // Multiplier depends on urgency level AND how busy the queue is
+    // Multiplier depends on urgency level AND how busy the queue is.
+    // Both the multiplier and the resulting cost are LOCKED onto the job row:
+    // the multiplier is queue-size-dependent so it can't be re-derived later,
+    // and reassign-file needs it to recompute the price exactly.
     const multiplier = getUrgencyMultiplier(urgency_level, queueSize);
-    const pricing    = calculateJobCost(settings, multiplier);
+    const pricing    = calculateJobCost(settings, multiplier, shopPricing);
 
     // 1️⃣ Create job — urgency_level stored alongside deadline for worker sorting
     // ❗ copies/color/double_sided moved to per-file level (job_files table)
     const jobResult = await pool.query(
-      `INSERT INTO print_jobs (user_id, shop_id, status, deadline, urgency_level)
-       VALUES ($1, $2, 'PENDING', $3, $4)
+      `INSERT INTO print_jobs
+         (user_id, shop_id, status, deadline, urgency_level, urgency_multiplier, estimated_cost)
+       VALUES ($1, $2, 'PENDING', $3, $4, $5, $6)
        RETURNING id`,
-      [userId, shopId, deadline || null, urgency_level]
+      [userId, shopId, deadline || null, urgency_level, multiplier, pricing.grandTotal]
     );
 
     const jobId = jobResult.rows[0].id;
@@ -277,9 +316,9 @@ export const createPrintJob = async (req, res) => {
 
       return pool.query(
         `INSERT INTO job_files
-          (job_id, file_name, file_path, copies, color, double_sided, orientation, paper_size)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [jobId, file.originalname, file.path, copies, color, double_sided, orientation, paper_size]
+          (job_id, file_name, file_path, copies, color, double_sided, orientation, paper_size, page_count)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [jobId, file.originalname, file.path, copies, color, double_sided, orientation, paper_size, s.page_count]
       );
     });
 
@@ -289,9 +328,10 @@ export const createPrintJob = async (req, res) => {
 
     // 3️⃣ Response — include full pricing breakdown so frontend can display it
     res.status(201).json({
-      job_id:      jobId,
-      file_count:  req.files.length,
+      job_id:         jobId,
+      file_count:     req.files.length,
       urgency_level,
+      estimated_cost: pricing.grandTotal, // locked server-side; authoritative
       pricing: {
         base_total:        pricing.baseTotal,
         urgency_extra:     pricing.urgencyExtra,
@@ -336,7 +376,10 @@ export const updateJobStatus = async (req, res) => {
 
   const ALLOWED_STATUS_TRANSITIONS = {
     PENDING: ["QUEUED"],
-    QUEUED: ["PRINTING"],
+    QUEUED: ["PRINTING", "WAITING_FOR_PRINTER"],
+    // WAITING_FOR_PRINTER: no eligible ONLINE printer for ≥1 file. Leaves
+    // QUEUED so it can't head-of-line-block routable jobs behind it.
+    WAITING_FOR_PRINTER: ["QUEUED", "PRINTING"],
     PRINTING: ["READY"],
     READY: ["COLLECTED"],
   };
@@ -459,6 +502,162 @@ export const regenerateOtp = async (req, res) => {
   } catch (err) {
     console.error("REGENERATE OTP ERROR:", err.message);
     res.status(500).json({ error: "Failed to regenerate OTP" });
+  }
+};
+
+// ─── POST /print-jobs/:id/reassign-file — shopkeeper override ────────────────
+// Reassigns ONE file of a WAITING_FOR_PRINTER job to a printer of a different
+// color tier (e.g. force a B&W file onto the color inkjet when the laser is
+// down). Paper size and duplex must still be satisfied — only the color-tier
+// rule is relaxed. The overridden file is re-priced at the PINNED PRINTER'S
+// tier (B&W file on the inkjet charges the color rate — that's why this needs
+// an explicit confirm), estimated_cost is recomputed with the job's stored
+// urgency_multiplier and re-locked, then dispatch is re-attempted immediately.
+export const reassignFile = async (req, res) => {
+  const { id: jobId } = req.params;
+  const { file_id, printer_id, confirm } = req.body || {};
+
+  if (!file_id || !printer_id || !UUID_RE.test(file_id) || !UUID_RE.test(printer_id)) {
+    return res.status(400).json({ error: "file_id and printer_id (UUIDs) are required" });
+  }
+
+  try {
+    const adminShopId = await getAdminShopId(req.user.id);
+    if (!adminShopId) {
+      return res.status(403).json({ error: "Admin is not assigned to a shop" });
+    }
+
+    // Job must be in this admin's shop and actually blocked
+    const jobRes = await pool.query(
+      `SELECT id, status, urgency_level, urgency_multiplier, estimated_cost
+       FROM print_jobs WHERE id = $1 AND shop_id = $2`,
+      [jobId, adminShopId]
+    );
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    const job = jobRes.rows[0];
+    if (job.status !== "WAITING_FOR_PRINTER") {
+      return res.status(400).json({
+        error: `Only WAITING_FOR_PRINTER jobs can be reassigned (job is ${job.status})`,
+      });
+    }
+
+    // File must belong to the job
+    const fileRes = await pool.query(
+      `SELECT id, color, double_sided, paper_size
+       FROM job_files WHERE id = $1 AND job_id = $2`,
+      [file_id, jobId]
+    );
+    if (fileRes.rows.length === 0) {
+      return res.status(404).json({ error: "File not found on this job" });
+    }
+    const file = fileRes.rows[0];
+
+    // Target printer: same shop, ONLINE, and satisfies paper + duplex.
+    // Color tier is deliberately NOT checked — this override exists precisely
+    // to cross tiers.
+    const printerRes = await pool.query(
+      `SELECT id, label, status, supports_color, supports_duplex, paper_sizes
+       FROM printers WHERE id = $1 AND shop_id = $2`,
+      [printer_id, adminShopId]
+    );
+    if (printerRes.rows.length === 0) {
+      return res.status(404).json({ error: "Printer not found" });
+    }
+    const printer = printerRes.rows[0];
+    if (printer.status !== "ONLINE") {
+      return res.status(400).json({ error: `Printer is ${printer.status}, not ONLINE` });
+    }
+    if (!printer.paper_sizes.includes(file.paper_size)) {
+      return res.status(400).json({ error: `Printer does not support ${file.paper_size}` });
+    }
+    if (file.double_sided && !printer.supports_duplex) {
+      return res.status(400).json({ error: "Printer does not support duplex" });
+    }
+
+    // ─── Recompute the locked price ──────────────────────────────────────────
+    // Pinned files price at their printer's tier; unpinned files by file.color.
+    const shopPricingRes = await pool.query(
+      `SELECT bw_price_per_page, color_price_per_page, duplex_discount_pct
+       FROM shop_pricing WHERE shop_id = $1`,
+      [adminShopId]
+    );
+    if (shopPricingRes.rows.length === 0) {
+      return res.status(400).json({ error: "Shop pricing not configured" });
+    }
+    const shopPricing = shopPricingRes.rows[0];
+
+    const allFilesRes = await pool.query(
+      `SELECT f.id, f.copies, f.color, f.double_sided, f.page_count,
+              p.supports_color AS pinned_supports_color
+       FROM job_files f
+       LEFT JOIN printers p ON p.id = f.printer_id
+       WHERE f.job_id = $1`,
+      [jobId]
+    );
+
+    const settings = allFilesRes.rows.map((f) => ({
+      copies: f.copies,
+      // effective tier: the file being reassigned → target printer's tier;
+      // an already-pinned file → its pinned printer's tier; else file.color
+      color:
+        f.id === file_id
+          ? printer.supports_color
+          : f.pinned_supports_color !== null
+            ? f.pinned_supports_color
+            : f.color,
+      double_sided: f.double_sided,
+      page_count: f.page_count,
+    }));
+
+    // Stored multiplier keeps the price exact (it was queue-size-dependent at
+    // submission). Fallback for pre-migration jobs without one.
+    const multiplier =
+      job.urgency_multiplier !== null
+        ? Number(job.urgency_multiplier)
+        : getUrgencyMultiplier(job.urgency_level, 0);
+
+    const pricing = calculateJobCost(settings, multiplier, shopPricing);
+
+    // Price changes tiers → require explicit confirmation, echoing the new
+    // price so the dashboard can show a confirm dialog.
+    if (confirm !== true) {
+      return res.status(400).json({
+        error: "Confirmation required — this reassignment changes the price",
+        current_estimated_cost: Number(job.estimated_cost),
+        new_estimated_cost: pricing.grandTotal,
+        confirm_required: true,
+      });
+    }
+
+    // Pin the file, re-lock the cost, put the job back in the queue…
+    await pool.query(`UPDATE job_files SET printer_id = $1 WHERE id = $2`, [
+      printer_id,
+      file_id,
+    ]);
+    await pool.query(
+      `UPDATE print_jobs SET estimated_cost = $1, status = 'QUEUED'
+       WHERE id = $2 AND status = 'WAITING_FOR_PRINTER'`,
+      [pricing.grandTotal, jobId]
+    );
+
+    // …and re-attempt dispatch right away (other files may still block, in
+    // which case the job returns to WAITING_FOR_PRINTER with the pin kept).
+    const dispatch = await attemptDispatch(jobId);
+
+    res.json({
+      message: "File reassigned",
+      job_id: jobId,
+      file_id,
+      pinned_printer: printer.label,
+      new_estimated_cost: pricing.grandTotal,
+      dispatched: dispatch.dispatched,
+      job_status: dispatch.dispatched ? "PRINTING" : "WAITING_FOR_PRINTER",
+    });
+  } catch (err) {
+    console.error("REASSIGN FILE ERROR:", err.message);
+    res.status(500).json({ error: "Failed to reassign file" });
   }
 };
 

@@ -160,3 +160,52 @@ CREATE INDEX IF NOT EXISTS idx_print_jobs_shop_status
 
 -- Run only after createPrintJob passes shop_id on INSERT (done — applied 2026-07-06)
 ALTER TABLE print_jobs ALTER COLUMN shop_id SET NOT NULL;
+
+-- ─── Phase: Multi-printer routing + per-shop pricing + WAITING_FOR_PRINTER ────
+
+-- Physical printers per shop. status is a manual shopkeeper toggle (no
+-- agent-reported health yet). device_name is the exact Windows printer name
+-- the agent passes to pdf-to-printer, entered manually by the shopkeeper.
+CREATE TABLE IF NOT EXISTS printers (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shop_id         UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  label           TEXT,
+  device_name     TEXT,
+  supports_color  BOOLEAN NOT NULL,
+  supports_duplex BOOLEAN NOT NULL DEFAULT TRUE,
+  paper_sizes     TEXT[] NOT NULL DEFAULT '{A4}',
+  status          TEXT NOT NULL DEFAULT 'ONLINE'
+    CHECK (status IN ('ONLINE', 'OFFLINE', 'OUT_OF_SERVICE')),
+  created_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- Routing query filters on (shop, status) every worker cycle
+CREATE INDEX IF NOT EXISTS idx_printers_shop_status ON printers (shop_id, status);
+
+-- Per-shop pricing (1:1 with shops). Paper size is intentionally NOT priced.
+CREATE TABLE IF NOT EXISTS shop_pricing (
+  shop_id              UUID PRIMARY KEY REFERENCES shops(id) ON DELETE CASCADE,
+  bw_price_per_page    NUMERIC(10,2) NOT NULL,
+  color_price_per_page NUMERIC(10,2) NOT NULL,
+  duplex_discount_pct  NUMERIC(5,2)  NOT NULL DEFAULT 0
+);
+
+-- page_count: server-side authoritative count (pdf-lib) stored at submission.
+-- printer_id: bound at DISPATCH time only — stays NULL until routing succeeds
+-- or the shopkeeper manually pins the file. Never SET NOT NULL on this.
+ALTER TABLE job_files
+ADD COLUMN IF NOT EXISTS page_count INTEGER,
+ADD COLUMN IF NOT EXISTS printer_id UUID REFERENCES printers(id) ON DELETE SET NULL;
+
+-- estimated_cost: server-computed price LOCKED at submission (pre-Razorpay).
+-- urgency_multiplier: the exact multiplier applied at submission — it depends
+-- on queue size at that moment (URGENT is 1.5 or 1.8), so it can't be
+-- re-derived later; stored so reassign-file recomputes the price exactly.
+ALTER TABLE print_jobs
+ADD COLUMN IF NOT EXISTS estimated_cost NUMERIC(10,2),
+ADD COLUMN IF NOT EXISTS urgency_multiplier NUMERIC(4,2);
+
+-- Seed pricing for the existing default shop so cost calc never hits NULL
+INSERT INTO shop_pricing (shop_id, bw_price_per_page, color_price_per_page, duplex_discount_pct)
+SELECT id, 2.00, 10.00, 0 FROM shops WHERE slug = 'default'
+ON CONFLICT (shop_id) DO NOTHING;

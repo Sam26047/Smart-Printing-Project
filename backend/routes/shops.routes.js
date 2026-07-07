@@ -10,8 +10,16 @@ import {
   issueAgentToken,
   revokeAgentToken,
 } from "../controllers/agentTokens.controller.js";
+import {
+  getShopPricing,
+  putShopPricing,
+} from "../controllers/shopPricing.controller.js";
 
 const router = express.Router();
+
+// Per-shop pricing (admin's own shop, resolved in the controller — no :shopId)
+router.get("/pricing", authenticate, requireAdmin, getShopPricing);
+router.put("/pricing", authenticate, requireAdmin, putShopPricing);
 
 // Issue a new agent device token for this shop (plaintext returned once)
 router.post("/:shopId/agent-tokens", authenticate, requireAdmin, issueAgentToken);

@@ -32,11 +32,13 @@ export const getPrintingJobs = async (req, res) => {
              'color',       f.color,
              'double_sided',f.double_sided,
              'orientation', f.orientation,
-             'paper_size',  f.paper_size
+             'paper_size',  f.paper_size,
+             'device_name', p.device_name
            ) ORDER BY f.created_at
          ) FILTER (WHERE f.id IS NOT NULL) AS files
        FROM print_jobs j
        LEFT JOIN job_files f ON j.id = f.job_id
+       LEFT JOIN printers p ON p.id = f.printer_id
        WHERE j.status = 'PRINTING' AND j.shop_id = $1
        GROUP BY j.id
        ORDER BY j.created_at ASC`,

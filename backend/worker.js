@@ -1,14 +1,19 @@
 // backend/worker.js
-// This worker's only job: pick the next QUEUED job (priority-sorted) and mark it PRINTING.
-// The local Windows print agent on the shop PC picks it up, prints it, then calls
-// POST /print-jobs/:id/agent-complete to generate the OTP and flip status to READY.
+// This worker's only job: pick the next QUEUED job (priority-sorted) and try to
+// dispatch it. Dispatch now runs per-file printer routing (utils/routing.js):
+// every file gets an eligible ONLINE printer bound → job flips to PRINTING and
+// the shop's agent picks it up; if ANY file is unroutable the job flips to
+// WAITING_FOR_PRINTER instead. Because a blocked job LEAVES the QUEUED state,
+// it can never head-of-line-block routable jobs behind it — the next cycle
+// simply selects the next QUEUED job.
 
 import pool from "./db/pool.js";
+import { attemptDispatch } from "./utils/routing.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function printerWorker() {
-  console.log("🖨️  Printer worker started (dispatch-only mode)");
+  console.log("🖨️  Printer worker started (dispatch + per-file routing mode)");
 
   while (true) {
     try {
@@ -32,22 +37,20 @@ async function printerWorker() {
 
       const jobId = result.rows[0].id;
 
-      // 2. Atomically claim the job: only update if it's still QUEUED
-      //    (guards against a race if two worker instances ever run)
-      const claimed = await pool.query(
-        `UPDATE print_jobs
-         SET status = 'PRINTING'
-         WHERE id = $1 AND status = 'QUEUED'
-         RETURNING id`,
-        [jobId]
-      );
+      // 2. Route + bind + claim (all-or-nothing inside attemptDispatch; the
+      //    status guard there also protects against a second worker instance)
+      const outcome = await attemptDispatch(jobId);
 
-      if (claimed.rows.length === 0) {
-        // Another process beat us to it — loop immediately
+      if (outcome.dispatched) {
+        console.log(`📤 Job ${jobId} dispatched → PRINTING (waiting for print agent)`);
+      } else if (outcome.reason === "unroutable") {
+        console.log(`⏸  Job ${jobId} → WAITING_FOR_PRINTER (no eligible ONLINE printer for ≥1 file)`);
+        // Job left QUEUED, so loop immediately — the next QUEUED job isn't blocked
+        continue;
+      } else {
+        // Race (another dispatcher claimed it) or job vanished — just move on
         continue;
       }
-
-      console.log(`📤 Job ${jobId} dispatched → PRINTING (waiting for print agent)`);
 
       // 3. Small pause before checking for the next job so we don't spin tightly
       //    while the agent is printing.  The agent itself drives the READY transition.

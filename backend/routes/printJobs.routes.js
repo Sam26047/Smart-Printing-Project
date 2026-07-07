@@ -64,6 +64,14 @@ router.post(
   authenticate,
   printJobsController.regenerateOtp
 );
+// Shopkeeper override: pin one file of a WAITING_FOR_PRINTER job to a printer
+// of a different color tier (recomputes + re-locks the price; needs confirm)
+router.post(
+  "/:id/reassign-file",
+  authenticate,
+  requireAdmin,
+  printJobsController.reassignFile
+);
 router.post("/:id/collect", authenticate, printJobsController.collectPrintJob);
 
 export default router;
