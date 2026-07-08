@@ -40,6 +40,10 @@ router.get("/", authenticate, requireAdmin, printJobsController.getAllJobs);
 //   • grey-out the Urgent option if peak load is active
 router.get("/queue/status", printJobsController.getQueueStatus);
 
+// Read-only cost preview — same pricing path as createPrintJob, creates
+// nothing. Used by the live estimate on the submit form.
+router.post("/estimate", authenticate, printJobsController.estimatePrintJob);
+
 router.post(  //only logged in users can create jobs now 
   "/",
   authenticate,

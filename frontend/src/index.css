@@ -244,6 +244,8 @@ body {
 .badge-ready     .badge-dot { background: var(--teal); }
 .badge-collected { background: var(--gray-lite);  color: #6b7280; }
 .badge-collected .badge-dot { background: #d1d5db; }
+.badge-waiting_for_printer { background: var(--rose-lite); color: var(--rose-dark); }
+.badge-waiting_for_printer .badge-dot { background: var(--rose); }
 
 /* ─────────────────────────────────────────────────────────
    BUTTONS

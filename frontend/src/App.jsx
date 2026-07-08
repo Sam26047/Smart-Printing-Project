@@ -6,6 +6,7 @@ import JobStatus from "./components/JobStatus";
 import JobHistory from "./components/JobHistory";
 import AdminQueue from "./components/AdminQueue";
 import AdminUsers from "./components/AdminUsers";
+import AdminShop from "./components/AdminShop";
 import LoginForm from "./components/LoginForm";
 import RegisterForm from "./components/RegisterForm";
 import WelcomePage from "./components/WelcomePage";
@@ -33,7 +34,7 @@ function Navbar({ user, logout }) {
 
 // ── Tab Nav ───────────────────────────────────────────────
 const USER_TABS  = ["home", "submit job", "my jobs"];
-const ADMIN_TABS = ["home", "submit job", "my jobs", "admin queue", "admin users"];
+const ADMIN_TABS = ["home", "submit job", "my jobs", "admin queue", "admin users", "shop settings"];
 
 function TabNav({ tabs, active, onSelect }) {
   return (
@@ -167,6 +168,16 @@ export default function App() {
               <p className="section-sub">registered accounts</p>
             </div>
             <AdminUsers />
+          </>
+        )}
+
+        {activeTab === "shop settings" && user?.role === "ADMIN" && (
+          <>
+            <div className="section-header">
+              <h1 className="section-title">Admin — Shop Settings</h1>
+              <p className="section-sub">printers · pricing</p>
+            </div>
+            <AdminShop />
           </>
         )}
 

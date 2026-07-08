@@ -24,10 +24,17 @@ const getQueueStatus = () => {
   return apiClient.get("/print-jobs/queue/status");
 };
 
+// Server-authoritative cost preview — same pricing path as submission, creates
+// nothing. Pages assumed 1/file; the real total is locked at createPrintJob.
+const estimateJob = (payload) => {
+  return apiClient.post("/print-jobs/estimate", payload);
+};
+
 export default {
   createPrintJob,
   getJobById,
   collectPrintJob,
   regenerateOtp,
   getQueueStatus,
+  estimateJob,
 };

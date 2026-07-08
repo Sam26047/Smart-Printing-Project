@@ -46,6 +46,21 @@ async function generateOTP(jobId) {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// ─── Helper: resolve the target shop for a submission/estimate ───────────────
+// Students pick a shop per job; when exactly one shop exists (current
+// single-campus case) it's auto-selected so the frontend needs no selector.
+async function resolveShopId(rawShopId) {
+  if (rawShopId) {
+    if (!UUID_RE.test(rawShopId)) return { error: "Invalid shop_id" };
+    const check = await pool.query("SELECT id FROM shops WHERE id = $1", [rawShopId]);
+    if (check.rows.length === 0) return { error: "Shop not found" };
+    return { shopId: rawShopId };
+  }
+  const all = await pool.query("SELECT id FROM shops");
+  if (all.rows.length === 1) return { shopId: all.rows[0].id };
+  return { error: "shop_id is required when multiple shops exist" };
+}
+
 // ─── Helper: get current QUEUED job count (used for dynamic pricing + peak check) ───
 // Scoped per shop when shopId is given — one shop being slammed shouldn't
 // raise prices or disable URGENT at another shop.
@@ -78,17 +93,23 @@ export const getAllJobs = async (req, res) => {
         j.priority,
         j.deadline,
         j.urgency_level,
+        j.estimated_cost,
         j.created_at,
         JSON_AGG(
           JSON_BUILD_OBJECT(
+            'file_id', f.id,
             'file_name', f.file_name,
             'copies', f.copies,
             'color', f.color,
-            'double_sided', f.double_sided
+            'double_sided', f.double_sided,
+            'paper_size', f.paper_size,
+            'printer_id', f.printer_id,
+            'printer_label', p.label
           ) ORDER BY f.file_name
         ) FILTER (WHERE f.file_name IS NOT NULL) AS files
       FROM print_jobs j
       LEFT JOIN job_files f ON j.id = f.job_id
+      LEFT JOIN printers p ON p.id = f.printer_id
       WHERE j.shop_id = $1
       GROUP BY j.id
       ORDER BY
@@ -125,6 +146,81 @@ export const getQueueStatus = async (req, res) => {
   }
 };
 
+// ─── POST /print-jobs/estimate — read-only cost preview ──────────────────────
+// Runs the exact same pricing path as createPrintJob (same shop resolution,
+// same shop_pricing row, same queue-dependent urgency multiplier, same
+// calculateJobCost) but creates nothing and never touches uploads. Page counts
+// aren't known before the files are uploaded, so each file prices at 1 page —
+// the REAL total (with pdf-lib page counts) is locked and returned by
+// createPrintJob at submission.
+export const estimatePrintJob = async (req, res) => {
+  try {
+    const { fileSettings, urgency_level = "NORMAL", shop_id } = req.body || {};
+
+    if (!["NORMAL", "SOON", "URGENT"].includes(urgency_level)) {
+      return res.status(400).json({ error: "Invalid urgency level" });
+    }
+
+    let settings = fileSettings;
+    if (typeof settings === "string") {
+      try {
+        settings = JSON.parse(settings);
+      } catch {
+        return res.status(400).json({ error: "Invalid fileSettings format" });
+      }
+    }
+    if (!Array.isArray(settings) || settings.length === 0) {
+      return res.status(400).json({ error: "fileSettings array is required" });
+    }
+
+    const shopResolution = await resolveShopId(shop_id);
+    if (shopResolution.error) {
+      return res.status(400).json({ error: shopResolution.error });
+    }
+    const shopId = shopResolution.shopId;
+
+    const pricingRes = await pool.query(
+      `SELECT bw_price_per_page, color_price_per_page, duplex_discount_pct
+       FROM shop_pricing WHERE shop_id = $1`,
+      [shopId]
+    );
+    if (pricingRes.rows.length === 0) {
+      return res.status(400).json({ error: "Shop pricing not configured" });
+    }
+
+    const queueSize  = await getQueueSize(shopId);
+    const multiplier = getUrgencyMultiplier(urgency_level, queueSize);
+
+    // Strip any client-sent page_count — estimates always price at 1 page/file
+    // (calculateJobCost's default); the server never trusts client page counts.
+    const clean = settings.map((s) => ({
+      copies: s.copies,
+      color: s.color,
+      double_sided: s.double_sided,
+    }));
+
+    const pricing = calculateJobCost(clean, multiplier, pricingRes.rows[0]);
+
+    res.json({
+      estimate: true, // page counts assumed 1/file — final total locked at submission
+      shop_id: shopId,
+      urgency_level,
+      queue_size: queueSize,
+      urgent_disabled: isUrgentDisabled(queueSize),
+      pricing: {
+        base_total:         pricing.baseTotal,
+        urgency_extra:      pricing.urgencyExtra,
+        grand_total:        pricing.grandTotal,
+        urgency_multiplier: multiplier,
+        breakdown:          pricing.breakdown,
+      },
+    });
+  } catch (err) {
+    console.error("ESTIMATE ERROR:", err.message);
+    res.status(500).json({ error: "Failed to estimate cost" });
+  }
+};
+
 export const createPrintJob = async (req, res) => {
   try {
     // urgency_level replaces free-form deadline as the user-facing priority control
@@ -149,31 +245,12 @@ export const createPrintJob = async (req, res) => {
       return res.status(400).json({ error: "Invalid fileSettings format" });
     }
 
-    // ─── Resolve target shop ──────────────────────────────────────────────────
-    // Students pick a shop per job. When exactly one shop exists (current
-    // single-campus case) it's auto-selected so the frontend needs no selector.
-    let shopId = shop_id || null;
-    if (shopId) {
-      if (!UUID_RE.test(shopId)) {
-        return res.status(400).json({ error: "Invalid shop_id" });
-      }
-      const shopCheck = await pool.query(
-        "SELECT id FROM shops WHERE id = $1",
-        [shopId]
-      );
-      if (shopCheck.rows.length === 0) {
-        return res.status(400).json({ error: "Shop not found" });
-      }
-    } else {
-      const shopsResult = await pool.query("SELECT id FROM shops");
-      if (shopsResult.rows.length === 1) {
-        shopId = shopsResult.rows[0].id;
-      } else {
-        return res
-          .status(400)
-          .json({ error: "shop_id is required when multiple shops exist" });
-      }
+    // ─── Resolve target shop (shared with the estimate endpoint) ─────────────
+    const shopResolution = await resolveShopId(shop_id);
+    if (shopResolution.error) {
+      return res.status(400).json({ error: shopResolution.error });
     }
+    const shopId = shopResolution.shopId;
 
     // ─── Shop pricing (per-shop rates; server is the source of truth) ─────────
     const pricingRes = await pool.query(

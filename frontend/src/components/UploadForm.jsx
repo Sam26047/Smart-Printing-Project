@@ -11,52 +11,10 @@ const DEFAULT_FILE_SETTINGS = {
   paper_size: "A4",          
 };
 
-// ─── Pricing constants (mirror backend/utils/pricing.js) ─────────────────────
-// Kept in sync manually — Phase 4 can fetch these from a /pricing/config endpoint
-const RATES = { BW_SINGLE: 1, BW_DOUBLE: 0.8, COLOR_SINGLE: 5, COLOR_DOUBLE: 4 };
-const QUEUE_LARGE_THRESHOLD = 5; // same threshold as backend
-
-function pageRate(color, doubleSided) {
-  if (color) return doubleSided ? RATES.COLOR_DOUBLE : RATES.COLOR_SINGLE;
-  return doubleSided ? RATES.BW_DOUBLE : RATES.BW_SINGLE;
-}
-
-// Returns the urgency multiplier for a given level + queue size.
-// Must stay in sync with backend/utils/pricing.js → getUrgencyMultiplier()
-function getUrgencyMultiplier(urgencyLevel, queueSize) {
-  if (urgencyLevel === "SOON")   return 1.2;
-  if (urgencyLevel === "URGENT") return queueSize >= QUEUE_LARGE_THRESHOLD ? 1.8 : 1.5;
-  return 1.0;
-}
-
-// Round to 2 decimal places, then drop trailing zeros for display
-// e.g. 2.40000000001 → "2.40" → displayed as "2.4", 3.0 → "3"
-function fmt(n) {
-  return parseFloat(n.toFixed(2));
-}
-
-// Computes a live cost breakdown from the current fileSettings + urgency selection
-function computeCost(fileSettings, urgencyLevel, queueSize) {
-  let baseTotal = 0;
-  const breakdown = fileSettings.map((s) => {
-    const copies      = parseInt(s.copies) || 1;
-    const color       = Boolean(s.color);
-    const doubleSided = Boolean(s.double_sided);
-    const pages       = 1; // placeholder — Phase 4 will compute from PDF.js
-    const rate        = pageRate(color, doubleSided);
-    const fileCost    = fmt(rate * pages * copies);
-    baseTotal        += fileCost;
-    return { copies, color, doubleSided, pages, rate, fileCost };
-  });
-
-  baseTotal = fmt(baseTotal);
-
-  const multiplier   = getUrgencyMultiplier(urgencyLevel, queueSize);
-  const grandTotal   = Math.ceil(baseTotal * multiplier); // always a whole rupee
-  const urgencyExtra = fmt(grandTotal - baseTotal);
-
-  return { baseTotal, urgencyExtra, grandTotal, multiplier, breakdown };
-}
+// ─── Pricing ──────────────────────────────────────────────────────────────────
+// ALL pricing math lives on the server (per-shop rates + queue-dependent
+// urgency). The form debounces settings changes and asks POST
+// /print-jobs/estimate — the browser only displays what the server returns.
 
 // ─── Priority level definitions ───────────────────────────────────────────────
 const PRIORITY_OPTIONS = [
@@ -81,6 +39,10 @@ function UploadForm() {
   const [urgentDisabled, setUrgentDisabled]     = useState(false);
   const [urgentCooldownMsg, setUrgentCooldownMsg] = useState(null); // set on 429 response
 
+  // Server-authoritative live estimate (response of POST /print-jobs/estimate)
+  const [estimate, setEstimate]     = useState(null);
+  const [estimating, setEstimating] = useState(false);
+
   // Fetch queue status from backend
   const fetchQueueStatus = async () => {
     try {
@@ -93,6 +55,32 @@ function UploadForm() {
   };
 
   useEffect(() => { fetchQueueStatus(); }, []);
+
+  // Live estimate — debounced 400ms after any file-settings/urgency change so
+  // the displayed number always comes from the same server pricing path that
+  // locks the cost at submission. Previous estimate stays visible while the
+  // new one is in flight (no flicker).
+  useEffect(() => {
+    if (fileSettings.length === 0) {
+      setEstimate(null);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setEstimating(true);
+      try {
+        const res = await printJobService.estimateJob({
+          fileSettings,
+          urgency_level: urgencyLevel,
+        });
+        setEstimate(res.data);
+      } catch {
+        // non-critical — keep showing the previous estimate
+      } finally {
+        setEstimating(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [fileSettings, urgencyLevel]);
 
   // When user selects files → initialize default settings per file
   const handleFilesChange = (e) => {
@@ -135,10 +123,8 @@ function UploadForm() {
     setFileSettings((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Live cost — recomputed whenever files, settings, urgency, or queue size changes
-  const cost = fileSettings.length > 0
-    ? computeCost(fileSettings, urgencyLevel, queueSize)
-    : null;
+  // Server-computed cost (null until the first estimate response arrives)
+  const cost = fileSettings.length > 0 ? estimate?.pricing || null : null;
 
   // Approximate queue position after submitting with chosen urgency
   function estimatedPosition() {
@@ -185,18 +171,19 @@ function UploadForm() {
 
       addActiveJob(newJobId); // ✅ add to active jobs list
 
-      // Show confirmed cost from server (authoritative — matches what backend calculated)
-      const p = response.data.pricing;
-      const costLine = p
-        ? ` · ₹${p.base_total} base${p.urgency_extra > 0 ? ` + ₹${p.urgency_extra} urgency` : ""} = ₹${p.grand_total} total`
-        : "";
-
-      setSuccess(`Job submitted — tracking ${newJobId.slice(0, 8)}…${costLine}`);
+      // The LOCKED total from the server — computed with real pdf-lib page
+      // counts at insert time. This is the number the student pays.
+      setSuccess({
+        jobId: newJobId,
+        fileNames: files.map((f) => f.name),
+        pricing: response.data.pricing,
+      });
 
       // reset state
       setFiles([]);
       setFileSettings([]);
       setUrgencyLevel("NORMAL");
+      setEstimate(null);
 
       // Refresh queue size after submission
       fetchQueueStatus();
@@ -249,7 +236,7 @@ function UploadForm() {
             <div className="file-card-meta">
               {(file.size / 1024).toFixed(0)} KB
               {cost?.breakdown[index] != null && (
-                <> · est. ₹{cost.breakdown[index].fileCost}</>
+                <> · est. ₹{cost.breakdown[index].file_cost}</>
               )}
             </div>
           </div>
@@ -285,7 +272,7 @@ function UploadForm() {
             <select
               className="file-select"
               value={fileSettings[index]?.orientation || "portrait"}
-              onChange={(e) => updateFileSetting(i, "orientation", e.target.value)}
+              onChange={(e) => updateFileSetting(index, "orientation", e.target.value)}
             >
               <option value="portrait">Portrait</option>
               <option value="landscape">Landscape</option>
@@ -294,7 +281,7 @@ function UploadForm() {
             <select
               className="file-select"
               value={fileSettings[index]?.paper_size || "A4"}
-              onChange={(e) => updateFileSetting(i, "paper_size", e.target.value)}
+              onChange={(e) => updateFileSetting(index, "paper_size", e.target.value)}
             >
               <option value="A4">A4</option>
               <option value="Letter">Letter</option>
@@ -396,39 +383,39 @@ function UploadForm() {
               </div>
             </div>
             <div>
-              <div className="form-label">Estimated cost</div>
+              <div className="form-label">
+                Estimated cost{estimating && <span style={{ color: "var(--gray)" }}> · updating…</span>}
+              </div>
               <div style={{ fontFamily: "var(--mono)", fontSize: "20px", fontWeight: 500, color: "var(--teal)" }}>
-                ₹{cost.grandTotal}
+                ₹{cost.grand_total}
               </div>
             </div>
           </div>
 
-          {/* Cost breakdown */}
+          {/* Cost breakdown — every number below comes from the server */}
           <div style={{ borderTop: "0.5px solid var(--border)", paddingTop: "12px" }}>
             {cost.breakdown.map((b, i) => (
               <div key={i} className="mono-sm" style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
-                <span>{files[i]?.name} · {b.copies}× · {b.color ? "Colour" : "B&W"} · {b.doubleSided ? "Duplex" : "Single"}</span>
+                <span>{files[i]?.name} · {b.copies}× · {b.color ? "Colour" : "B&W"} · {b.double_sided ? "Duplex" : "Single"}</span>
                 <span style={{ color: "var(--gray-dark)", whiteSpace: "nowrap", marginLeft: "12px" }}>
-                  ₹{b.rate}/pg × {b.pages} = ₹{b.fileCost}
+                  ₹{b.rate_per_page}/pg × {b.estimated_pages} = ₹{b.file_cost}
                 </span>
               </div>
             ))}
 
             <div style={{ borderTop: "0.5px solid var(--border)", marginTop: "8px", paddingTop: "8px" }}>
               <div style={{ display: "flex", justifyContent: "space-between" }} className="mono-sm">
-                <span>Base total</span><span>₹{cost.baseTotal}</span>
+                <span>Base total</span><span>₹{cost.base_total}</span>
               </div>
-              {cost.urgencyExtra > 0 && (
+              {cost.urgency_extra > 0 && (
                 <div style={{ display: "flex", justifyContent: "space-between", color: "var(--amber-dark)" }} className="mono-sm">
-                  <span>
-                    Urgency surcharge ({urgencyLevel === "SOON" ? "+20%" : queueSize >= QUEUE_LARGE_THRESHOLD ? "+80%" : "+50%"})
-                  </span>
-                  <span>+₹{cost.urgencyExtra}</span>
+                  <span>Urgency surcharge (+{Math.round((cost.urgency_multiplier - 1) * 100)}%)</span>
+                  <span>+₹{cost.urgency_extra}</span>
                 </div>
               )}
               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginTop: "4px" }} className="mono-sm">
                 <span>Total</span>
-                <span style={{ color: "var(--teal)", fontSize: "13px" }}>₹{cost.grandTotal}</span>
+                <span style={{ color: "var(--teal)", fontSize: "13px" }}>₹{cost.grand_total}</span>
               </div>
             </div>
 
@@ -449,9 +436,37 @@ function UploadForm() {
         </button>
       </div>
 
+      {/* ── Locked-total confirmation (payment anchor) ────────────────────── */}
+      {success && (
+        <div className="card card-padded" style={{ marginTop: "16px", borderLeft: "3px solid var(--teal)" }}>
+          <div className="form-label">job submitted · locked total</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: "32px", fontWeight: 600, color: "var(--teal)", margin: "4px 0 2px" }}>
+            ₹{success.pricing?.grand_total}
+          </div>
+          <div className="mono-sm" style={{ color: "var(--gray-dark)", marginBottom: "10px" }}>
+            this is the amount payable · tracking {success.jobId.slice(0, 8)}…
+          </div>
+
+          {/* Final per-file breakdown with REAL page counts from the server */}
+          {success.pricing?.breakdown?.map((b, i) => (
+            <div key={i} className="mono-sm" style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
+              <span>{success.fileNames[i]} · {b.copies}× · {b.color ? "Colour" : "B&W"} · {b.double_sided ? "Duplex" : "Single"}</span>
+              <span style={{ color: "var(--gray-dark)", whiteSpace: "nowrap", marginLeft: "12px" }}>
+                ₹{b.rate_per_page}/pg × {b.estimated_pages} pg = ₹{b.file_cost}
+              </span>
+            </div>
+          ))}
+          {success.pricing?.urgency_extra > 0 && (
+            <div className="mono-sm" style={{ display: "flex", justifyContent: "space-between", color: "var(--amber-dark)" }}>
+              <span>Urgency surcharge</span>
+              <span>+₹{success.pricing.urgency_extra}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Response messages ──────────────────────────────────────────────── */}
-      {success && <div className="alert alert-success">{success}</div>}
-      {error   && <div className="alert alert-error">{error}</div>}
+      {error && <div className="alert alert-error">{error}</div>}
 
     </form>
   );

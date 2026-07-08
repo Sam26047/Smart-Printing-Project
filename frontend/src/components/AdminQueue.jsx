@@ -1,9 +1,10 @@
 // frontend/src/components/AdminQueue.jsx
 import { useEffect, useState } from "react";
 import adminJobs from "../services/adminJobs";
+import printersService from "../services/printers";
 import AdminJobRow from "./AdminJobRow";
 
-const STATUSES = ["ALL", "PENDING", "QUEUED", "PRINTING", "READY", "COLLECTED"];
+const STATUSES = ["ALL", "PENDING", "QUEUED", "WAITING_FOR_PRINTER", "PRINTING", "READY", "COLLECTED"];
 
 function SearchIcon() {
   return (
@@ -18,6 +19,7 @@ export default function AdminQueue() {
   const [jobs, setJobs]                 = useState([]);
   const [filterStatus, setFilterStatus] = useState("ALL");
   const [search, setSearch]             = useState("");
+  const [printers, setPrinters]         = useState([]); // for the reassign dropdown on blocked jobs
 
   const fetchJobs = () => {
     adminJobs.getAllJobs()
@@ -25,8 +27,15 @@ export default function AdminQueue() {
       .catch(() => {});
   };
 
+  const fetchPrinters = () => {
+    printersService.listPrinters()
+      .then((res) => setPrinters(res.data.printers || []))
+      .catch(() => {});
+  };
+
   useEffect(() => {
     fetchJobs();
+    fetchPrinters();
     const interval = setInterval(fetchJobs, 5000); // poll every 5s so admin sees live updates
     return () => clearInterval(interval);
   }, []);
@@ -52,6 +61,10 @@ export default function AdminQueue() {
         <div className="stat-card amber">
           <div className="stat-val">{count("QUEUED")}</div>
           <div className="stat-lbl">queued</div>
+        </div>
+        <div className="stat-card rose">
+          <div className="stat-val">{count("WAITING_FOR_PRINTER")}</div>
+          <div className="stat-lbl">blocked</div>
         </div>
         <div className="stat-card rose">
           <div className="stat-val">{count("PRINTING")}</div>
@@ -85,7 +98,7 @@ export default function AdminQueue() {
           onChange={(e) => setFilterStatus(e.target.value)}
         >
           {STATUSES.map((s) => (
-            <option key={s} value={s}>{s.toLowerCase()}</option>
+            <option key={s} value={s}>{s.toLowerCase().replaceAll("_", " ")}</option>
           ))}
         </select>
       </div>
@@ -108,7 +121,7 @@ export default function AdminQueue() {
             </thead>
             <tbody>
               {filtered.map((job) => (
-                <AdminJobRow key={job.id} job={job} onUpdate={fetchJobs} />
+                <AdminJobRow key={job.id} job={job} printers={printers} onUpdate={fetchJobs} />
               ))}
             </tbody>
           </table>
