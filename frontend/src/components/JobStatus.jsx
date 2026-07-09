@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import printJobService from "../services/printJobs";
 import { useAuth } from "../hooks/useAuth";
+import PaymentStep from "./PaymentStep";
 
 const STEPS = ["PENDING", "QUEUED", "PRINTING", "READY", "COLLECTED"];
 
@@ -34,6 +35,26 @@ function StepDot({ stepName, currentStatus }) {
       </div>
       <div className="stepper-label">{stepName.toLowerCase()}</div>
     </div>
+  );
+}
+
+// Payment pill — same inline-pill idiom as UrgencyPill
+function PaymentPill({ paymentStatus }) {
+  const map = {
+    UNPAID: { label: "unpaid",         color: "var(--amber-dark)", bg: "var(--amber-lite)" },
+    PAID:   { label: "paid",           color: "var(--teal-dark)",  bg: "var(--teal-lite)"  },
+    FAILED: { label: "payment failed", color: "var(--rose-dark)",  bg: "var(--rose-lite)"  },
+  };
+  const p = map[paymentStatus];
+  if (!p) return null;
+  return (
+    <span style={{
+      fontFamily: "var(--mono)", fontSize: 11,
+      color: p.color, background: p.bg,
+      padding: "2px 8px", borderRadius: 20,
+    }}>
+      {p.label}
+    </span>
   );
 }
 
@@ -173,9 +194,24 @@ export default function JobStatus({ jobId }) {
         ))}
       </div>
 
-      {/* Footer: urgency pill (replaces "no deadline set") + collect section */}
+      {/* Payment step — a PENDING job doesn't enter the queue until paid
+          (webhook-confirmed) or queued at the counter by the shopkeeper */}
+      {job.status === "PENDING" && (job.payment_status === "UNPAID" || job.payment_status === "FAILED") && (
+        <div style={{ marginBottom: 12 }}>
+          <PaymentStep
+            jobId={jobId}
+            amount={job.estimated_cost != null ? Number(job.estimated_cost) : null}
+            paymentStatus={job.payment_status}
+          />
+        </div>
+      )}
+
+      {/* Footer: urgency + payment pills + collect section */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 4 }}>
-        <UrgencyPill level={job.urgency_level || "NORMAL"} />
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <UrgencyPill level={job.urgency_level || "NORMAL"} />
+          <PaymentPill paymentStatus={job.payment_status} />
+        </div>
         {job.status === "READY" && <CollectPrint jobId={jobId} />}
       </div>
     </div>

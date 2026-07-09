@@ -29,6 +29,7 @@ export const login = async (req, res) => {
       token,
       role: user.role,
       username: user.username,
+      email: user.email, // Razorpay checkout prefill + navbar display
     });
   } catch (err) {
     console.error("LOGIN ERROR:", err.message);

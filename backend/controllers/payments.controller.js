@@ -37,7 +37,9 @@ export const createPaymentOrder = async (req, res) => {
     }
     const job = jobRes.rows[0];
 
-    if (job.status !== "PENDING" || job.payment_status !== "UNPAID") {
+    // UNPAID = first attempt; FAILED = retry after a failed payment (the same
+    // Razorpay order accepts new payment attempts until it's paid)
+    if (job.status !== "PENDING" || !["UNPAID", "FAILED"].includes(job.payment_status)) {
       return res.status(400).json({
         error: `Job is not payable (status ${job.status}, payment ${job.payment_status})`,
       });

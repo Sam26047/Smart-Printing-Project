@@ -33,6 +33,30 @@ function UrgencyBadge({ level }) {
   );
 }
 
+// Payment pill — shown only when informative: unpaid/failed always, paid only
+// while the job is still in flight (a COLLECTED job is implicitly settled)
+function PaymentPill({ paymentStatus, status }) {
+  const map = {
+    UNPAID: { label: "unpaid", color: "var(--amber-dark)", bg: "var(--amber-lite)", border: "#fbbf24" },
+    PAID:   { label: "paid",   color: "var(--teal-dark)",  bg: "var(--teal-lite)",  border: "#5eead4" },
+    FAILED: { label: "pay failed", color: "var(--rose-dark)", bg: "var(--rose-lite)", border: "#fca5a5" },
+  };
+  const p = map[paymentStatus];
+  if (!p) return null;
+  if (paymentStatus === "PAID" && status === "COLLECTED") return null;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center",
+      padding: "2px 8px", borderRadius: 20, marginLeft: 5,
+      fontFamily: "var(--mono)", fontSize: 10, fontWeight: 500, letterSpacing: "0.05em",
+      color: p.color, background: p.bg, border: `0.5px solid ${p.border}`,
+      whiteSpace: "nowrap",
+    }}>
+      {p.label}
+    </span>
+  );
+}
+
 function timeAgo(dateStr) {
   if (!dateStr) return "—";
   const diff  = Date.now() - new Date(dateStr).getTime();
@@ -91,7 +115,10 @@ export default function JobHistory() {
                     </span>
                   )}
                 </td>
-                <td><StatusBadge status={job.status} /></td>
+                <td>
+                  <StatusBadge status={job.status} />
+                  <PaymentPill paymentStatus={job.payment_status} status={job.status} />
+                </td>
                 {/* Urgency badge replaces old deadline timestamp */}
                 <td><UrgencyBadge level={job.urgency_level || "NORMAL"} /></td>
                 <td style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--gray)" }}>

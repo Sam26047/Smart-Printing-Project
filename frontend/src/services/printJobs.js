@@ -30,6 +30,13 @@ const estimateJob = (payload) => {
   return apiClient.post("/print-jobs/estimate", payload);
 };
 
+// Creates (or returns the existing) Razorpay order for a PENDING+UNPAID job.
+// Response { order_id, amount, currency, key_id } configures the checkout
+// modal — key_id comes from here, the server owns which key is in play.
+const createPaymentOrder = (id) => {
+  return apiClient.post(`/print-jobs/${id}/payment/order`, {});
+};
+
 export default {
   createPrintJob,
   getJobById,
@@ -37,4 +44,5 @@ export default {
   regenerateOtp,
   getQueueStatus,
   estimateJob,
+  createPaymentOrder,
 };

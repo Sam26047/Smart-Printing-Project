@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import printJobService from "../services/printJobs";
 import { useAuth } from "../hooks/useAuth";
+import PaymentStep from "./PaymentStep";
 
 const DEFAULT_FILE_SETTINGS = {
   copies: 1,
@@ -462,6 +463,16 @@ function UploadForm() {
               <span>+₹{success.pricing.urgency_extra}</span>
             </div>
           )}
+
+          {/* Pay right here — the job won't enter the print queue until the
+              payment webhook confirms (or the shopkeeper queues it for cash) */}
+          <div style={{ borderTop: "0.5px solid var(--border)", marginTop: 12, paddingTop: 12 }}>
+            <PaymentStep
+              jobId={success.jobId}
+              amount={success.pricing?.grand_total}
+              paymentStatus="UNPAID"
+            />
+          </div>
         </div>
       )}
 

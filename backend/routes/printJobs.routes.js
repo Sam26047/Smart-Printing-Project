@@ -58,7 +58,8 @@ router.post(  //only logged in users can create jobs now
   upload.array("files", 10),
   printJobsController.createPrintJob
 );
-router.get("/:id", printJobsController.getJobById);
+// Authed + owner-scoped (returns payment_status/estimated_cost — see controller)
+router.get("/:id", authenticate, printJobsController.getJobById);
 router.patch(
   "/:id/status",
   authenticate,

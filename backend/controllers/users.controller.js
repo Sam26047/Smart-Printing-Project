@@ -43,12 +43,13 @@ export const getUserJobs = async (req, res) => {
     const userId     = req.user.id;
     const activeOnly = req.query.active === "true";
 
-    // urgency_level added so JobHistory and JobStatus can display the priority badge
+    // urgency_level for the priority badge; payment_status/estimated_cost for
+    // the checkout UI's payment pill and pay action
     const query = activeOnly
-      ? `SELECT id, status, priority, urgency_level, created_at
+      ? `SELECT id, status, priority, urgency_level, payment_status, estimated_cost, created_at
          FROM print_jobs WHERE user_id = $1 AND status NOT IN ('COLLECTED')
          ORDER BY created_at DESC`
-      : `SELECT id, status, priority, urgency_level, created_at
+      : `SELECT id, status, priority, urgency_level, payment_status, estimated_cost, created_at
          FROM print_jobs WHERE user_id = $1
          ORDER BY created_at DESC`;
 
