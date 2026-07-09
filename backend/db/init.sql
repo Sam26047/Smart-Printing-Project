@@ -209,3 +209,20 @@ ADD COLUMN IF NOT EXISTS urgency_multiplier NUMERIC(4,2);
 INSERT INTO shop_pricing (shop_id, bw_price_per_page, color_price_per_page, duplex_discount_pct)
 SELECT id, 2.00, 10.00, 0 FROM shops WHERE slug = 'default'
 ON CONFLICT (shop_id) DO NOTHING;
+
+-- ─── Phase: Razorpay payments (test mode) ─────────────────────────────────────
+
+-- Payment state lives on the job. Jobs are created PENDING+UNPAID; ONLY a
+-- signature-verified payment.captured webhook flips PENDING → QUEUED (the
+-- order amount is always read server-side from the locked estimated_cost).
+-- Exception by design: an admin's manual PENDING → QUEUED advance is the
+-- cash-at-counter path and leaves payment_status = 'UNPAID'.
+-- (A future 'CASH' payment_status value could make that state self-describing.)
+ALTER TABLE print_jobs
+ADD COLUMN IF NOT EXISTS razorpay_order_id   TEXT,
+ADD COLUMN IF NOT EXISTS razorpay_payment_id TEXT,
+ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'UNPAID'
+  CHECK (payment_status IN ('UNPAID', 'PAID', 'FAILED'));
+
+-- The webhook looks jobs up by order id
+CREATE INDEX IF NOT EXISTS idx_print_jobs_rzp_order ON print_jobs (razorpay_order_id);

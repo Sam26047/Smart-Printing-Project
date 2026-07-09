@@ -12,7 +12,13 @@ import printersRoutes from "./routes/printers.routes.js";
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+// verify hook: retain the exact wire bytes on req.rawBody — the Razorpay
+// webhook signature is HMAC'd over the raw body, and re-serializing req.body
+// would not be byte-identical. Never remove this without moving the webhook
+// route to its own express.raw() parser.
+app.use(express.json({
+  verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 
 // Mount routes
 app.use("/", authRoutes);              // /login, /register

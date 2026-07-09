@@ -4,6 +4,7 @@ import multer from "multer";
 import fs from "fs";
 import { authenticate, requireAdmin } from "../middleware/auth.js";
 import * as printJobsController from "../controllers/printJobs.controller.js";
+import { createPaymentOrder, paymentWebhook } from "../controllers/payments.controller.js";
 
 const router = express.Router();
 
@@ -43,6 +44,13 @@ router.get("/queue/status", printJobsController.getQueueStatus);
 // Read-only cost preview — same pricing path as createPrintJob, creates
 // nothing. Used by the live estimate on the submit form.
 router.post("/estimate", authenticate, printJobsController.estimatePrintJob);
+
+// ─── Payments (Razorpay, test mode) ──────────────────────────────────────────
+// Webhook has NO JWT — Razorpay calls it; the HMAC signature is the auth.
+// Registered before the /:id/* routes for clarity.
+router.post("/payment/webhook", paymentWebhook);
+// Order creation: student pays for their own PENDING+UNPAID job
+router.post("/:id/payment/order", authenticate, createPaymentOrder);
 
 router.post(  //only logged in users can create jobs now 
   "/",

@@ -1,4 +1,16 @@
 // backend/config/config.js
+
+// Fail fast: payments can't work half-configured, and a missing webhook secret
+// would make signature verification silently impossible. This runs before any
+// module that imports config (incl. the Razorpay SDK constructor), so the
+// process dies with a clear message instead of a stack trace.
+const missingRzp = ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"]
+  .filter((k) => !process.env[k]);
+if (missingRzp.length > 0) {
+  console.error(`❌ Missing Razorpay env vars: ${missingRzp.join(", ")} — add them to .env (see .env.example)`);
+  process.exit(1);
+}
+
 export default {
   db: {
     host:     process.env.DB_HOST,
@@ -17,5 +29,10 @@ export default {
     user:  process.env.EMAIL_USER,
     pass:  process.env.EMAIL_PASS,
     from:  process.env.EMAIL_FROM || process.env.EMAIL_USER,
+  },
+  razorpay: {
+    keyId:         process.env.RAZORPAY_KEY_ID,         // rzp_test_... (test mode)
+    keySecret:     process.env.RAZORPAY_KEY_SECRET,
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET, // signs webhook payloads (HMAC-SHA256)
   },
 };
