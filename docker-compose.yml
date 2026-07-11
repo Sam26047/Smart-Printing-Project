@@ -17,8 +17,6 @@ services:
       EMAIL_USER: ${EMAIL_USER}
       EMAIL_PASS: ${EMAIL_PASS}
       EMAIL_FROM: ${EMAIL_FROM}
-      PRINTER_URI: ${PRINTER_URI}
-      PRINTER_MOCK: ${PRINTER_MOCK}
     depends_on:
       - postgres
     volumes:
@@ -28,9 +26,7 @@ services:
     build:
       context: ./frontend #dockerfile location
       args:
-        VITE_API_URL: http://80.225.238.21:5000
-    ports:
-      - "80:80" #Map port 80 of the container to port 80 of the server. So when someone visits http://YOUR_IP (port 80 is default for HTTP), they hit nginx which serves your React app
+        VITE_API_URL: https://printflow.top
     depends_on:
       - backend #start backend container before frontend to ensure api is available when frontend starts
 
@@ -48,5 +44,19 @@ services:
     image: redis:7
     ports:
       - "6379:6379"
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
 volumes:               #this is basically variable declaration or resource definition 
   postgres_data:       #like this project uses a volume called postgres_data
+  caddy_data:
+  caddy_config:
