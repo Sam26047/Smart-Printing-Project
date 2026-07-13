@@ -1,5 +1,6 @@
 // backend/controllers/printJobs.controller.js
 import fs from "fs";
+import path from "path";
 import { PDFDocument } from "pdf-lib";
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
@@ -435,9 +436,19 @@ export const getJobById = async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT id, status, urgency_level, payment_status, estimated_cost, created_at
-       FROM print_jobs
-       WHERE id = $1 AND user_id = $2`,
+      `SELECT
+         j.id, j.status, j.urgency_level, j.payment_status, j.estimated_cost, j.created_at,
+         JSON_AGG(
+           JSON_BUILD_OBJECT(
+             'file_id',   f.id,
+             'file_name', f.file_name,
+             'printed_ready', f.printed_file_path IS NOT NULL
+           ) ORDER BY f.created_at
+         ) FILTER (WHERE f.id IS NOT NULL) AS files
+       FROM print_jobs j
+       LEFT JOIN job_files f ON f.job_id = j.id
+       WHERE j.id = $1 AND j.user_id = $2
+       GROUP BY j.id`,
       [id, req.user.id]
     );
 
@@ -449,6 +460,43 @@ export const getJobById = async (req, res) => {
   } catch (err) {
     console.error("DB ERROR:", err.message);
     res.status(500).json({ error: "Failed to fetch print job" });
+  }
+};
+
+// ─── GET /print-jobs/:id/files/:fileId/output — stamped "printed output" ─────
+// Owner-scoped. Streams the artifact the virtual worker produced for demo-shop
+// jobs (404 for physical-print jobs, which have no artifact).
+export const getPrintedOutput = async (req, res) => {
+  const { id, fileId } = req.params;
+  if (!UUID_RE.test(id) || !UUID_RE.test(fileId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT f.printed_file_path, f.file_name
+       FROM job_files f
+       JOIN print_jobs j ON j.id = f.job_id
+       WHERE f.id = $1 AND j.id = $2 AND j.user_id = $3`,
+      [fileId, id, req.user.id]
+    );
+    if (result.rows.length === 0 || !result.rows[0].printed_file_path) {
+      return res.status(404).json({ error: "No printed output available" });
+    }
+
+    const { printed_file_path, file_name } = result.rows[0];
+    const absolutePath = path.resolve(printed_file_path);
+    if (!fs.existsSync(absolutePath)) {
+      return res.status(404).json({ error: "Printed output missing from disk" });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    // inline: browsers display it instead of downloading — the demo payoff
+    res.setHeader("Content-Disposition", `inline; filename="printed-${file_name}"`);
+    fs.createReadStream(absolutePath).pipe(res);
+  } catch (err) {
+    console.error("PRINTED OUTPUT ERROR:", err.message);
+    res.status(500).json({ error: "Failed to fetch printed output" });
   }
 };
 

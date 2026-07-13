@@ -33,7 +33,8 @@ export const getPrintingJobs = async (req, res) => {
              'double_sided',f.double_sided,
              'orientation', f.orientation,
              'paper_size',  f.paper_size,
-             'device_name', p.device_name
+             'device_name', p.device_name,
+             'printed_file_path', f.printed_file_path
            ) ORDER BY f.created_at
          ) FILTER (WHERE f.id IS NOT NULL) AS files
        FROM print_jobs j
@@ -84,6 +85,51 @@ export const downloadJobFile = async (req, res) => {
   } catch (err) {
     console.error("AGENT DOWNLOAD FILE ERROR:", err.message);
     res.status(500).json({ error: "Failed to stream file" });
+  }
+};
+
+// ── POST /agent/jobs/:jobId/files/:fileId/output ─────────────────────────────
+// Stores a "printed output" artifact for one file of a PRINTING job — used by
+// the demo shop's virtual worker to persist the stamped PDF (a physical agent
+// prints to paper and has no artifact). Raw application/pdf body (route-level
+// express.raw parser). Idempotent PUT semantics: re-uploading overwrites the
+// same path, records the same value.
+export const uploadPrintedOutput = async (req, res) => {
+  const { jobId, fileId } = req.params;
+
+  try {
+    // File must belong to the job, job to the calling shop, and be in flight
+    const check = await pool.query(
+      `SELECT f.id
+       FROM job_files f
+       JOIN print_jobs j ON j.id = f.job_id
+       WHERE f.id = $1 AND j.id = $2 AND j.shop_id = $3 AND j.status = 'PRINTING'`,
+      [fileId, jobId, req.shop.id]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: "File not found or job not in PRINTING state" });
+    }
+
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: "Expected a raw application/pdf body" });
+    }
+    if (req.body.subarray(0, 5).toString() !== "%PDF-") {
+      return res.status(400).json({ error: "Body is not a PDF" });
+    }
+
+    const relPath = path.join("uploads", "printed", `${fileId}.pdf`);
+    fs.mkdirSync(path.resolve("uploads", "printed"), { recursive: true });
+    fs.writeFileSync(path.resolve(relPath), req.body);
+
+    await pool.query(
+      `UPDATE job_files SET printed_file_path = $1 WHERE id = $2`,
+      [relPath, fileId]
+    );
+
+    res.json({ message: "Printed output stored", file_id: fileId });
+  } catch (err) {
+    console.error("AGENT OUTPUT UPLOAD ERROR:", err.message);
+    res.status(500).json({ error: "Failed to store printed output" });
   }
 };
 

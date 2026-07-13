@@ -60,6 +60,8 @@ router.post(  //only logged in users can create jobs now
 );
 // Authed + owner-scoped (returns payment_status/estimated_cost — see controller)
 router.get("/:id", authenticate, printJobsController.getJobById);
+// Stamped "printed output" artifact (demo virtual printing) — owner-scoped
+router.get("/:id/files/:fileId/output", authenticate, printJobsController.getPrintedOutput);
 router.patch(
   "/:id/status",
   authenticate,

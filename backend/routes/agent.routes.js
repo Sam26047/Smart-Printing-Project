@@ -12,6 +12,7 @@ import { requireAgentToken } from "../middleware/agentAuth.js";
 import {
   getPrintingJobs,
   downloadJobFile,
+  uploadPrintedOutput,
   agentComplete,
   agentFail,
 } from "../controllers/agent.controller.js";
@@ -26,6 +27,14 @@ router.get("/jobs/printing", getPrintingJobs);
 
 // Download the actual PDF bytes for a specific file
 router.get("/jobs/printing/:jobId/files/:fileId", downloadJobFile);
+
+// Store the "printed output" artifact for one file (virtual/demo printing) —
+// raw PDF body, so this route gets its own express.raw parser
+router.post(
+  "/jobs/:jobId/files/:fileId/output",
+  express.raw({ type: "application/pdf", limit: "25mb" }),
+  uploadPrintedOutput
+);
 
 // Mark a job as successfully printed → triggers OTP + READY
 router.post("/jobs/:jobId/complete", agentComplete);

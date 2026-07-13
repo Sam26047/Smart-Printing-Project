@@ -5,6 +5,7 @@
 // revoke another shop's tokens.
 
 import express from "express";
+import pool from "../db/pool.js";
 import { authenticate, requireAdmin } from "../middleware/auth.js";
 import {
   issueAgentToken,
@@ -16,6 +17,20 @@ import {
 } from "../controllers/shopPricing.controller.js";
 
 const router = express.Router();
+
+// Public shop directory (id/name/slug only) — the submit form's shop selector
+// needs this once more than one shop exists. Read-only, no sensitive fields.
+router.get("/", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, slug FROM shops ORDER BY created_at ASC`
+    );
+    res.json({ shops: result.rows });
+  } catch (err) {
+    console.error("LIST SHOPS ERROR:", err.message);
+    res.status(500).json({ error: "Failed to list shops" });
+  }
+});
 
 // Per-shop pricing (admin's own shop, resolved in the controller — no :shopId)
 router.get("/pricing", authenticate, requireAdmin, getShopPricing);

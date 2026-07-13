@@ -39,3 +39,12 @@ app.listen(config.port, () => {
 
 // Start printer worker (dispatches QUEUED → PRINTING)
 import("./worker.js");
+
+// Demo virtual-printer worker: fulfills the demo VIRTUAL shop's jobs through
+// the same /agent HTTP interface a physical agent uses. Enabled only when its
+// per-shop agent token is configured.
+if (process.env.DEMO_AGENT_TOKEN) {
+  import("./virtualAgent.js");
+} else {
+  console.log("🤖  Demo virtual-printer worker disabled (no DEMO_AGENT_TOKEN)");
+}

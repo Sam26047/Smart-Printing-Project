@@ -226,3 +226,50 @@ ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'UNPAID'
 
 -- The webhook looks jobs up by order id
 CREATE INDEX IF NOT EXISTS idx_print_jobs_rzp_order ON print_jobs (razorpay_order_id);
+
+-- ─── Phase: Demo virtual-printer worker + seeded demo accounts ────────────────
+
+-- Stamped "printed output" artifact produced by the demo shop's virtual worker
+-- (uploaded via POST /agent/jobs/:jobId/files/:fileId/output). NULL for jobs
+-- printed on physical printers — paper has no artifact.
+ALTER TABLE job_files ADD COLUMN IF NOT EXISTS printed_file_path TEXT;
+
+-- Demo VIRTUAL shop: its jobs are fulfilled by the cloud virtual-printer
+-- worker (backend/virtualAgent.js), which authenticates with a normal per-shop
+-- agent token and uses the same /agent endpoints as a physical agent. Nothing
+-- in the pipeline special-cases it.
+INSERT INTO shops (name, slug, fulfillment)
+SELECT 'PrintFlow Demo Shop', 'demo', 'VIRTUAL'
+WHERE NOT EXISTS (SELECT 1 FROM shops WHERE slug = 'demo');
+
+INSERT INTO shop_pricing (shop_id, bw_price_per_page, color_price_per_page, duplex_discount_pct)
+SELECT id, 2.00, 10.00, 0 FROM shops WHERE slug = 'demo'
+ON CONFLICT (shop_id) DO NOTHING;
+
+-- Two virtual printers, both tiers, all paper sizes the submit form offers —
+-- a demo job must never park at WAITING_FOR_PRINTER. device_name values are
+-- descriptive sentinels; no code keys off them.
+INSERT INTO printers (shop_id, label, device_name, supports_color, supports_duplex, paper_sizes, status)
+SELECT s.id, 'Virtual Laser (B&W)', 'VIRTUAL-BW', FALSE, TRUE, '{A4,Letter,A3}', 'ONLINE'
+FROM shops s WHERE s.slug = 'demo'
+AND NOT EXISTS (SELECT 1 FROM printers p WHERE p.shop_id = s.id AND p.device_name = 'VIRTUAL-BW');
+
+INSERT INTO printers (shop_id, label, device_name, supports_color, supports_duplex, paper_sizes, status)
+SELECT s.id, 'Virtual Inkjet (Colour)', 'VIRTUAL-COLOR', TRUE, TRUE, '{A4,Letter,A3}', 'ONLINE'
+FROM shops s WHERE s.slug = 'demo'
+AND NOT EXISTS (SELECT 1 FROM printers p WHERE p.shop_id = s.id AND p.device_name = 'VIRTUAL-COLOR');
+
+-- Demo logins (password for both: PrintDemo@2026 — documented in README).
+-- ON CONFLICT DO NOTHING: re-running never touches existing/real accounts.
+INSERT INTO users (username, password_hash, email, role)
+VALUES ('demo_customer', '$2b$10$5Eb.VuPSw7rBJGWcpF7rbukG6PRPVJUXxyzOyWs/bYDAU1iw2wl7u', 'demo.customer@printflow.example', 'STUDENT')
+ON CONFLICT (username) DO NOTHING;
+
+INSERT INTO users (username, password_hash, email, role, shop_id)
+SELECT 'demo_admin', '$2b$10$5Eb.VuPSw7rBJGWcpF7rbukG6PRPVJUXxyzOyWs/bYDAU1iw2wl7u', 'demo.admin@printflow.example', 'ADMIN', s.id
+FROM shops s WHERE s.slug = 'demo'
+ON CONFLICT (username) DO NOTHING;
+
+-- The virtual worker's agent token is NOT seeded here (init.sql never holds a
+-- live secret): mint it once as demo_admin via POST /shops/<demoShopId>/agent-tokens
+-- and put the plaintext in .env as DEMO_AGENT_TOKEN.
