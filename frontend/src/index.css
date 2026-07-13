@@ -248,6 +248,127 @@ body {
 .badge-waiting_for_printer .badge-dot { background: var(--rose); }
 
 /* ─────────────────────────────────────────────────────────
+   DEMO TOUR — coach-mark overlay (mask / ring / tooltip)
+   The only new visual primitives; everything else reuses tokens.
+   ───────────────────────────────────────────────────────── */
+.tour-mask {
+  position: fixed;
+  background: rgba(13, 17, 23, 0.62); /* --ink at ~60% */
+  z-index: 9000;
+}
+.tour-ring {
+  position: fixed;
+  border: 2px solid var(--amber);
+  border-radius: var(--r);
+  box-shadow: 0 0 0 4px rgba(217, 119, 6, 0.28);
+  pointer-events: none;
+  z-index: 9001;
+  transition: top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease;
+}
+.tour-tip {
+  position: fixed;
+  z-index: 9002;
+  background: var(--paper2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-lg);
+  box-shadow: 0 8px 30px rgba(13, 17, 23, 0.25);
+  padding: 16px 18px;
+  font-family: var(--sans);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+.tour-tip-counter {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--amber-dark);
+  margin-bottom: 6px;
+}
+.tour-tip-title { font-size: 14px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.tour-tip-body  { font-size: 12.5px; color: var(--gray-dark); line-height: 1.65; margin-bottom: 10px; }
+.tour-tip-action {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--amber-dark);
+  background: var(--amber-lite);
+  border-radius: var(--r);
+  padding: 7px 10px;
+  margin-bottom: 10px;
+  line-height: 1.55;
+}
+.tour-tip-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+.tour-tip-skip {
+  margin-right: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--gray);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+.tour-wait {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--gray-dark);
+}
+.tour-wait-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+  flex-shrink: 0;
+  animation: tour-pulse 1.1s ease-in-out infinite;
+}
+@keyframes tour-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50%      { opacity: 1;    transform: scale(1.1); }
+}
+.tour-pay-box {
+  background: var(--amber-lite);
+  border: 1px solid var(--amber);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.tour-pay-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.tour-pay-row span {
+  color: var(--amber-dark);
+  width: 52px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.tour-pay-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber-dark);
+  line-height: 1.55;
+  margin-top: 6px;
+}
+.tour-payoff-frame {
+  width: 100%;
+  height: 320px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r);
+  background: var(--white);
+  margin-bottom: 10px;
+}
+
+/* ─────────────────────────────────────────────────────────
    BUTTONS
    ───────────────────────────────────────────────────────── */
 .btn {

@@ -239,7 +239,9 @@ function UploadForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit}>
+    // data-tour-shop-count lets the demo tour distinguish "selector hidden
+    // because single shop" (skip its step) from "shops still loading" (wait)
+    <form onSubmit={handleSubmit} data-tour-shop-count={shops.length}>
 
       {/* ── 0️⃣ Shop selector — only shown when there's a choice to make ───── */}
       {multiShop && (
@@ -247,6 +249,7 @@ function UploadForm() {
           <label className="form-label" htmlFor="shop-select">Print shop</label>
           <select
             id="shop-select"
+            data-tour="shop-select"
             className="form-select"
             value={selectedShopId}
             onChange={(e) => setSelectedShopId(e.target.value)}
@@ -267,6 +270,7 @@ function UploadForm() {
       {/* ── 1️⃣ Drop zone ─────────────────────────────────────────────────── */}
       <div
         className={`upload-zone${dragging ? " dragging" : ""}`}
+        data-tour="upload-zone"
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
@@ -289,7 +293,7 @@ function UploadForm() {
 
       {/* ── 2️⃣ Per-file cards (replaces old table) ──────────────────────── */}
       {files.map((file, index) => (
-        <div key={index} className="file-card">
+        <div key={index} className="file-card" data-tour={index === 0 ? "file-card" : undefined}>
           <div className="file-card-icon">📄</div>
 
           <div className="file-card-info">
@@ -492,14 +496,19 @@ function UploadForm() {
         <button type="button" className="btn btn-outline" onClick={handleClear}>
           clear all
         </button>
-        <button type="submit" className="btn btn-primary" disabled={!shopChosen}>
+        <button type="submit" className="btn btn-primary" data-tour="submit-btn" disabled={!shopChosen}>
           submit job →
         </button>
       </div>
 
       {/* ── Locked-total confirmation (payment anchor) ────────────────────── */}
       {success && (
-        <div className="card card-padded" style={{ marginTop: "16px", borderLeft: "3px solid var(--teal)" }}>
+        <div
+          className="card card-padded"
+          data-tour="locked-total"
+          data-tour-job-id={success.jobId}
+          style={{ marginTop: "16px", borderLeft: "3px solid var(--teal)" }}
+        >
           <div className="form-label">job submitted · locked total</div>
           <div style={{ fontFamily: "var(--mono)", fontSize: "32px", fontWeight: 600, color: "var(--teal)", margin: "4px 0 2px" }}>
             ₹{success.pricing?.grand_total}

@@ -144,6 +144,7 @@ export default function PaymentStep({ jobId, amount, paymentStatus = "UNPAID", o
       <button
         type="button"
         className="btn btn-primary"
+        data-tour="pay-btn"
         disabled={busy}
         onClick={handlePay}
       >

@@ -10,6 +10,7 @@ import AdminShop from "./components/AdminShop";
 import LoginForm from "./components/LoginForm";
 import RegisterForm from "./components/RegisterForm";
 import WelcomePage from "./components/WelcomePage";
+import DemoTour from "./components/DemoTour";
 
 // ── Navbar ────────────────────────────────────────────────
 function Navbar({ user, logout }) {
@@ -42,6 +43,7 @@ function TabNav({ tabs, active, onSelect }) {
       {tabs.map((tab) => (
         <button
           key={tab}
+          data-tour={`tab-${tab.replaceAll(" ", "-")}`}
           className={`tab-nav-item ${active === tab ? "active" : ""}`}
           onClick={() => onSelect(tab)}
         >
@@ -59,6 +61,9 @@ export default function App() {
 
   // Start on "home" so new users see the welcome/explainer page first
   const [activeTab, setActiveTab] = useState("home");
+
+  // Guided demo tour — React state only (no storage); reload = restart, fine.
+  const [tourActive, setTourActive] = useState(false);
 
   const tabs = user?.role === "ADMIN" ? ADMIN_TABS : USER_TABS;
 
@@ -115,7 +120,7 @@ export default function App() {
 
         {/* WelcomePage receives onGetStarted so its CTA button navigates to submit job */}
         {activeTab === "home" && (
-          <WelcomePage onGetStarted={handleGetStarted} />
+          <WelcomePage onGetStarted={handleGetStarted} onStartTour={() => setTourActive(true)} />
         )}
 
         {activeTab === "submit job" && (
@@ -182,6 +187,9 @@ export default function App() {
         )}
 
       </main>
+
+      {/* Coach-mark overlay — portal-mounted here so it survives tab switches */}
+      <DemoTour active={tourActive} onExit={() => setTourActive(false)} />
     </div>
   );
 }

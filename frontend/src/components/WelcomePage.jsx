@@ -1,9 +1,15 @@
 // frontend/src/components/WelcomePage.jsx
 // Landing screen shown to all users before they interact with the system.
 // "Get Started" calls onGetStarted() which App.jsx wires to switch to the Submit tab.
-// Uses only CSS classes from index.css — no inline style objects.
+// "Take the guided demo tour" starts the coach-mark walkthrough (DemoTour).
 
-function WelcomePage({ onGetStarted }) {
+import { useAuth } from "../hooks/useAuth";
+import { DEMO_CREDENTIALS } from "../content/demoTour";
+
+function WelcomePage({ onGetStarted, onStartTour }) {
+  const { user } = useAuth();
+  const isDemoCustomer = user?.username === DEMO_CREDENTIALS.customer.username;
+
   return (
     <div>
 
@@ -24,9 +30,23 @@ function WelcomePage({ onGetStarted }) {
         <p style={{ fontFamily: "var(--mono)", fontSize: "13px", color: "var(--gray)", maxWidth: "480px", margin: "0 auto 28px", lineHeight: "1.7" }}>
           Upload your documents, pick a priority, and collect your prints — no waiting in line, no guessing when they'll be ready.
         </p>
-        <button className="btn btn-primary" onClick={onGetStarted}>
-          Get Started →
-        </button>
+        <div style={{ display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" }}>
+          <button className="btn btn-primary" onClick={onGetStarted}>
+            Get Started →
+          </button>
+          {onStartTour && (
+            <button className="btn btn-outline" data-tour="start-tour" onClick={onStartTour}>
+              🎬 take the guided demo tour
+            </button>
+          )}
+        </div>
+        {onStartTour && (
+          <div style={{ fontFamily: "var(--mono)", fontSize: "11px", color: "var(--gray)", marginTop: "12px" }}>
+            {isDemoCustomer
+              ? "you're signed in as demo_customer — perfect for the tour"
+              : `tour works best as ${DEMO_CREDENTIALS.customer.username} / ${DEMO_CREDENTIALS.customer.password}`}
+          </div>
+        )}
       </div>
 
       {/* ── How it works ─────────────────────────────────────────────────── */}
@@ -78,17 +98,15 @@ function WelcomePage({ onGetStarted }) {
         <div className="section-sub">you'll always see the exact cost before confirming</div>
       </div>
 
-      <div className="card" style={{ marginBottom: "12px", overflow: "hidden" }}>
-        {PRICING_ROWS.map((row, i) => (
-          <div key={row.label} style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center",
-            padding: "10px 18px",
-            borderBottom: i < PRICING_ROWS.length - 1 ? "0.5px solid var(--border)" : "none",
-          }}>
-            <span style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--gray-dark)" }}>{row.label}</span>
-            <span style={{ fontFamily: "var(--mono)", fontSize: "12px", fontWeight: 500, color: "var(--amber-dark)" }}>{row.value}</span>
-          </div>
-        ))}
+      {/* Rates are per shop now — no hardcoded numbers here. The submit form
+          shows the selected shop's exact per-page rates via the live estimate. */}
+      <div className="card card-padded" style={{ marginBottom: "12px" }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: "12px", color: "var(--gray-dark)", lineHeight: "1.7" }}>
+          Each print shop sets its own B&amp;W and colour per-page rates (plus an
+          optional duplex discount). When you submit, the live estimate shows the
+          selected shop's exact prices — and the final total is locked, server-side,
+          before you pay.
+        </div>
       </div>
 
       <div className="deadline-warn" style={{ marginBottom: "36px" }}>
@@ -140,16 +158,6 @@ const PRIORITY_LEVELS = [
   { emoji: "🟢", label: "Normal", time: "Standard queue",  price: "No extra charge",        desc: "Best for non-urgent work. Served in order.",                                  color: "var(--teal)" },
   { emoji: "🟡", label: "Soon",   time: "2 – 4 hours",     price: "+20% on base cost",      desc: "Moves you ahead of Normal jobs. Good for same-day deadlines.",                color: "var(--amber-dark)" },
   { emoji: "🔴", label: "Urgent", time: "30 – 60 minutes", price: "+50% to +80% (by load)", desc: "Highest priority. Max 2 per day, 1-hour cooldown between submissions.",        color: "var(--rose)" },
-];
-
-const PRICING_ROWS = [
-  { label: "B&W — single-sided",              value: "₹1 / page"  },
-  { label: "B&W — double-sided",              value: "₹0.80 / page" },
-  { label: "Colour — single-sided",           value: "₹5 / page"  },
-  { label: "Colour — double-sided",           value: "₹4 / page"  },
-  { label: "Soon surcharge",                  value: "+20%"        },
-  { label: "Urgent surcharge (normal queue)", value: "+50%"        },
-  { label: "Urgent surcharge (busy queue)",   value: "+80%"        },
 ];
 
 const FAIR_USE = [

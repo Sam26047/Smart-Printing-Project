@@ -162,7 +162,7 @@ export default function JobStatus({ jobId }) {
     : null;
 
   return (
-    <div className="card card-padded" style={{ marginBottom: 14 }}>
+    <div className="card card-padded" data-tour-job-card={jobId} style={{ marginBottom: 14 }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
         <div>
