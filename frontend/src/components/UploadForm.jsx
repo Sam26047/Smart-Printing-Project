@@ -34,20 +34,29 @@ function UploadForm() {
   const [error, setError]               = useState(null);
   const [success, setSuccess]           = useState(null);
 
-  // Queue status — fetched once on mount and after each submission.
+  // Queue status — fetched on mount, on shop change, and after each submission.
   // Used to show queue position and disable Urgent during peak load.
   const [queueSize, setQueueSize]               = useState(0);
   const [urgentDisabled, setUrgentDisabled]     = useState(false);
   const [urgentCooldownMsg, setUrgentCooldownMsg] = useState(null); // set on 429 response
 
+  // Shop selection — pricing, queue, and urgent-lockout are all PER SHOP.
+  // Auto-selected and hidden when only one shop exists; an explicit pick is
+  // required once there are several.
+  const [shops, setShops]                   = useState([]);
+  const [selectedShopId, setSelectedShopId] = useState("");
+
   // Server-authoritative live estimate (response of POST /print-jobs/estimate)
   const [estimate, setEstimate]     = useState(null);
   const [estimating, setEstimating] = useState(false);
 
-  // Fetch queue status from backend
-  const fetchQueueStatus = async () => {
+  const multiShop  = shops.length > 1;
+  const shopChosen = Boolean(selectedShopId);
+
+  // Fetch queue status for the selected shop (per-shop numbers)
+  const fetchQueueStatus = async (shopId = selectedShopId) => {
     try {
-      const res = await printJobService.getQueueStatus();
+      const res = await printJobService.getQueueStatus(shopId);
       setQueueSize(res.data.queue_size);
       setUrgentDisabled(res.data.urgent_disabled);
     } catch {
@@ -55,14 +64,32 @@ function UploadForm() {
     }
   };
 
-  useEffect(() => { fetchQueueStatus(); }, []);
+  // Load shops once; auto-select when there's only one
+  useEffect(() => {
+    printJobService.getShops()
+      .then((res) => {
+        const list = res.data.shops || [];
+        setShops(list);
+        if (list.length === 1) setSelectedShopId(list[0].id);
+      })
+      .catch(() => { /* non-critical — dropdown just won't populate */ });
+  }, []);
+
+  // Re-fetch queue status whenever the chosen shop changes (position + Urgent
+  // lockout must reflect the shop being submitted to, not a global view)
+  useEffect(() => {
+    if (selectedShopId) fetchQueueStatus(selectedShopId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedShopId]);
 
   // Live estimate — debounced 400ms after any file-settings/urgency change so
   // the displayed number always comes from the same server pricing path that
   // locks the cost at submission. Previous estimate stays visible while the
   // new one is in flight (no flicker).
   useEffect(() => {
-    if (fileSettings.length === 0) {
+    // Need files AND a chosen shop — pricing is per-shop, so an estimate
+    // without a shop would be meaningless (and the server would reject it).
+    if (fileSettings.length === 0 || !selectedShopId) {
       setEstimate(null);
       return;
     }
@@ -72,6 +99,7 @@ function UploadForm() {
         const res = await printJobService.estimateJob({
           fileSettings,
           urgency_level: urgencyLevel,
+          shop_id: selectedShopId,
         });
         setEstimate(res.data);
       } catch {
@@ -81,7 +109,7 @@ function UploadForm() {
       }
     }, 400);
     return () => clearTimeout(timer);
-  }, [fileSettings, urgencyLevel]);
+  }, [fileSettings, urgencyLevel, selectedShopId]);
 
   // When user selects files → initialize default settings per file
   const handleFilesChange = (e) => {
@@ -141,6 +169,8 @@ function UploadForm() {
     setError(null);
     setSuccess(null);
     setUrgentCooldownMsg(null);
+    // selectedShopId is intentionally preserved — clearing files shouldn't
+    // force the user to re-pick their shop.
   };
 
   const handleSubmit = async (e) => {
@@ -154,6 +184,10 @@ function UploadForm() {
       setError("Please select at least one PDF file");
       return;
     }
+    if (!selectedShopId) {
+      setError("Please choose a print shop");
+      return;
+    }
 
     const formData = new FormData();
 
@@ -165,6 +199,9 @@ function UploadForm() {
 
     // urgency_level replaces the old deadline field
     formData.append("urgency_level", urgencyLevel);
+
+    // per-shop routing/pricing — required now that more than one shop exists
+    formData.append("shop_id", selectedShopId);
 
     try {
       const response = await printJobService.createPrintJob(formData);
@@ -203,6 +240,29 @@ function UploadForm() {
 
   return (
     <form onSubmit={handleSubmit}>
+
+      {/* ── 0️⃣ Shop selector — only shown when there's a choice to make ───── */}
+      {multiShop && (
+        <div className="form-group" style={{ marginBottom: "16px" }}>
+          <label className="form-label" htmlFor="shop-select">Print shop</label>
+          <select
+            id="shop-select"
+            className="form-select"
+            value={selectedShopId}
+            onChange={(e) => setSelectedShopId(e.target.value)}
+          >
+            <option value="">Select a shop…</option>
+            {shops.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          {!shopChosen && (
+            <div className="mono-sm" style={{ color: "var(--gray)", marginTop: "6px" }}>
+              Pick a print shop to see pricing and submit.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── 1️⃣ Drop zone ─────────────────────────────────────────────────── */}
       <div
@@ -432,7 +492,7 @@ function UploadForm() {
         <button type="button" className="btn btn-outline" onClick={handleClear}>
           clear all
         </button>
-        <button type="submit" className="btn btn-primary">
+        <button type="submit" className="btn btn-primary" disabled={!shopChosen}>
           submit job →
         </button>
       </div>

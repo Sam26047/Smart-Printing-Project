@@ -19,9 +19,18 @@ const regenerateOtp = (id) => {
 };
 
 // Fetches current queue size and whether urgent is disabled (peak load check)
-// Used by UploadForm to show queue position and grey-out Urgent when needed
-const getQueueStatus = () => {
-  return apiClient.get("/print-jobs/queue/status");
+// Used by UploadForm to show queue position and grey-out Urgent when needed.
+// Queue size + urgent-lockout are PER SHOP, so pass the selected shop's id.
+const getQueueStatus = (shopId) => {
+  return apiClient.get("/print-jobs/queue/status", {
+    params: shopId ? { shop_id: shopId } : {},
+  });
+};
+
+// Public shop directory (id/name/slug). The submit form's shop selector needs
+// this once more than one shop exists.
+const getShops = () => {
+  return apiClient.get("/shops");
 };
 
 // Server-authoritative cost preview — same pricing path as submission, creates
@@ -43,6 +52,7 @@ export default {
   collectPrintJob,
   regenerateOtp,
   getQueueStatus,
+  getShops,
   estimateJob,
   createPaymentOrder,
 };
