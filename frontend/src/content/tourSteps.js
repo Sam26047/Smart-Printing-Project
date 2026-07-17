@@ -11,6 +11,11 @@
 //   { type: "job",  when: (ctx) => bool }  — ctx.job is the latest polled job
 // Optional per step: skipIf(ctx), minDwellMs, waitingLabel, dynamicBody(job),
 // payment (renders DEMO_TEST_PAYMENT), payoff (renders the stamped output).
+//
+// waitingLabel legibility rule: a step that waits on the USER (dom advance)
+// says "waiting for you — …" so it never reads as a system hang; a step that
+// waits on the PIPELINE (job advance) explains what's happening and that it's
+// normal, so the pulse + copy never look frozen.
 
 import { DEMO_CREDENTIALS, DEMO_TEST_PAYMENT, DEMO_TOUR_STEPS } from "./demoTour";
 
@@ -44,6 +49,7 @@ export const TOUR_UI_STEPS = [
     title: "Open the submit tab",
     body: "Everything starts with a print job.",
     action: "Click the “submit job” tab.",
+    waitingLabel: "waiting for you — open the tab above",
     advance: { type: "dom", when: (ctx) => tabActive(ctx, "tab-submit-job") },
   },
   {
@@ -53,6 +59,7 @@ export const TOUR_UI_STEPS = [
     body: "Pricing, queue and printers are per shop. The demo shop's printers are virtual — that's what lets you watch the job “print” online.",
     action: "Select “PrintFlow Demo Shop”.",
     waitingHint: "loading shops…",
+    waitingLabel: "waiting for you — pick the shop above",
     // Single-shop deployments hide the selector entirely — skip, don't strand
     skipIf: (ctx) => shopCount(ctx) === 1,
     advance: {
@@ -70,6 +77,7 @@ export const TOUR_UI_STEPS = [
     title: "Upload a PDF",
     body: "Any PDF works. Try two files — one B&W, one colour — and they'll route to different virtual printers.",
     action: "Drop a PDF here, or click to browse.",
+    waitingLabel: "waiting for you — add a PDF above",
     advance: { type: "dom", when: (ctx) => !!ctx.doc.querySelector(".file-card") },
   },
   {
@@ -85,6 +93,7 @@ export const TOUR_UI_STEPS = [
     title: "Submit the job",
     body: "The server counts the real PDF pages and locks the final price at submission — that locked total is what you'll pay.",
     action: "Click “submit job →”.",
+    waitingLabel: "waiting for you — click submit above",
     // ctx.newJobId is set by the engine only when a FRESH submission's card
     // appears (a stale card from an earlier run doesn't count)
     advance: { type: "dom", when: (ctx) => !!ctx.newJobId },
@@ -96,7 +105,9 @@ export const TOUR_UI_STEPS = [
     body: "This opens the REAL Razorpay checkout in test mode — no money moves. The bank window will cover this panel, so keep these values handy (copy the card first):",
     payment: true,
     action: "Click “pay →”, enter the values above, then click Success on the mock bank page.",
-    waitingLabel: "waiting for the payment webhook…",
+    // system wait — payment is webhook-authoritative, so there's a real gap
+    // between the mock-bank Success click and the server confirming it
+    waitingLabel: "waiting for Razorpay to confirm your payment — this usually takes a few seconds…",
     advance: {
       type: "job",
       when: (ctx) => !!ctx.job && (ctx.job.payment_status === "PAID" || ctx.job.status !== "PENDING"),
@@ -107,6 +118,7 @@ export const TOUR_UI_STEPS = [
     target: "locked-total",
     title: content.confirm.title,
     body: content.confirm.body,
+    waitingLabel: "payment confirmed — moving your job into the queue…",
     minDwellMs: 2500, // let the "webhook confirmed it" moment actually register
     advance: { type: "job", when: (ctx) => !!ctx.job && ctx.job.status !== "PENDING" },
   },
@@ -116,6 +128,7 @@ export const TOUR_UI_STEPS = [
     title: "Watch it print",
     body: content.printing.body,
     action: "Click the “my jobs” tab.",
+    waitingLabel: "waiting for you — open the tab above",
     advance: { type: "dom", when: (ctx) => tabActive(ctx, "tab-my-jobs") },
   },
   {
@@ -138,7 +151,16 @@ export const TOUR_UI_STEPS = [
           return `status: ${job.status}`;
       }
     },
-    waitingLabel: "following the job in real time…",
+    // system wait — the short pulse line mirrors the real job state so it
+    // never reads as frozen; the ~10s "printing" names the demo print delay
+    waitingLabel: (job) => {
+      switch (job?.status) {
+        case "QUEUED":              return "assigning a printer… (a second or two)";
+        case "PRINTING":            return "the virtual printer is working — about 10 seconds, like a real one…";
+        case "WAITING_FOR_PRINTER": return "paused — no printer online right now (see above)";
+        default:                    return "following your job in real time…";
+      }
+    },
     advance: {
       type: "job",
       when: (ctx) => !!ctx.job && (ctx.job.status === "READY" || ctx.job.status === "COLLECTED"),
@@ -146,7 +168,10 @@ export const TOUR_UI_STEPS = [
   },
   {
     id: "output",
-    target: "job-card",
+    // No spotlight here on purpose: the payoff panel is large and the job card
+    // is larger — no placement can avoid covering it, and there's nothing on
+    // the card to click at this step. Centered over the full dim instead.
+    target: null,
     title: content.output.title,
     body: content.output.body,
     payoff: true, // component fetches + embeds the stamped PDF

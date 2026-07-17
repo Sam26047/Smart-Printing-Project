@@ -9,7 +9,7 @@
 // else is dimmed and click-blocked. Progress lives in React state only —
 // no localStorage/sessionStorage; a reload simply means restarting the tour.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import printJobService from "../services/printJobs";
 import apiClient from "../services/apiClient";
@@ -18,8 +18,82 @@ import { TOUR_UI_STEPS, DEMO_CREDENTIALS, DEMO_TEST_PAYMENT } from "../content/t
 
 const TICK_MS = 500;       // DOM observation cadence
 const JOB_POLL_MS = 3000;  // job-state observation cadence
-const STALE_MS = 90000;    // show "skip ahead" escape on observing steps
+const STALE_MS = 45000;    // reveal "skip ahead" escape on observing steps — a
+                           // real evaluator decides it's broken well before 90s
 const PAD = 6;             // spotlight padding around the target
+const GAP = 14;            // tooltip↔target gap
+const VM = 12;             // viewport margin for the tooltip
+
+// Do the two rects overlap at all? (edges touching = not overlapping)
+function rectsIntersect(a, b) {
+  return !(
+    a.left + a.width <= b.left ||
+    b.left + b.width <= a.left ||
+    a.top + a.height <= b.top ||
+    b.top + b.height <= a.top
+  );
+}
+
+// Place the tooltip so it NEVER overlaps the spotlight hole. Tries below →
+// above → right → left of the hole and returns the first candidate that both
+// fits on-screen and doesn't intersect the hole; falls back to the viewport
+// corner farthest from the hole centre (preferring a non-overlapping one).
+// Uses the tooltip's REAL measured size, not a guess — the old estHeight guess
+// is what let the payment callout sit on top of the pay button.
+function placeTooltip(hole, size, vw, vh) {
+  const w = size.width;
+  const h = size.height;
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+  if (!hole) {
+    return {
+      top: clamp(vh / 2 - h / 2, VM, Math.max(VM, vh - h - VM)),
+      left: clamp(vw / 2 - w / 2, VM, Math.max(VM, vw - w - VM)),
+    };
+  }
+
+  // below/above clamp the cross-axis (horizontal) — safe, they're already
+  // separated vertically. right/left clamp the vertical — safe, separated
+  // horizontally. We never clamp the separating axis (that could shove the
+  // tooltip back onto the hole); an off-screen candidate is simply rejected.
+  const clampLeft = (l) => clamp(l, VM, Math.max(VM, vw - w - VM));
+  const clampTop = (t) => clamp(t, VM, Math.max(VM, vh - h - VM));
+  const candidates = [
+    { top: hole.top + hole.height + GAP, left: clampLeft(hole.left) },        // below
+    { top: hole.top - GAP - h,           left: clampLeft(hole.left) },        // above
+    { top: clampTop(hole.top),           left: hole.left + hole.width + GAP },// right
+    { top: clampTop(hole.top),           left: hole.left - GAP - w },         // left
+  ];
+  const fits = (c) =>
+    c.top >= VM - 0.5 && c.left >= VM - 0.5 &&
+    c.top + h <= vh - VM + 0.5 && c.left + w <= vw - VM + 0.5;
+
+  for (const c of candidates) {
+    if (fits(c) && !rectsIntersect({ top: c.top, left: c.left, width: w, height: h }, hole)) {
+      return { top: c.top, left: c.left };
+    }
+  }
+
+  // Nothing fits cleanly (tiny viewport / huge target): farthest corner.
+  const hcx = hole.left + hole.width / 2;
+  const hcy = hole.top + hole.height / 2;
+  const corners = [
+    { top: VM, left: VM },
+    { top: VM, left: Math.max(VM, vw - w - VM) },
+    { top: Math.max(VM, vh - h - VM), left: VM },
+    { top: Math.max(VM, vh - h - VM), left: Math.max(VM, vw - w - VM) },
+  ];
+  let best = corners[0];
+  let bestScore = -Infinity;
+  for (const c of corners) {
+    const cx = c.left + w / 2;
+    const cy = c.top + h / 2;
+    const clear = !rectsIntersect({ top: c.top, left: c.left, width: w, height: h }, hole);
+    const score = Math.hypot(cx - hcx, cy - hcy) + (clear ? 1e6 : 0);
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return best;
+}
 
 const SUBMIT_STEP_INDEX = TOUR_UI_STEPS.findIndex((s) => s.id === "submit");
 
@@ -68,16 +142,19 @@ export default function DemoTour({ active, onExit }) {
   const [rect, setRect] = useState(null);        // spotlight target box (viewport coords)
   const [jobId, setJobId] = useState(null);      // learned from data-tour-job-id
   const [job, setJob] = useState(null);          // latest polled job state
-  const [stale, setStale] = useState(false);     // observing step stuck > 90s
+  const [stale, setStale] = useState(false);     // observing step stuck > STALE_MS
   const [copied, setCopied] = useState(false);
   const [outputs, setOutputs] = useState(null);  // [{ file_name, url }]
   const [outputLoading, setOutputLoading] = useState(false);
   const [outputErr, setOutputErr] = useState(null);
+  const [tipPos, setTipPos] = useState(null);    // measured, overlap-free tooltip pos
+  const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
 
   const jobRef = useRef(null);
   const rectRef = useRef(null);
   const enteredAtRef = useRef(Date.now());
   const outputsRef = useRef(null);
+  const tipRef = useRef(null);                   // for real-size measurement
   // A success card from an EARLIER submission may still be mounted when the
   // tour (re)reaches the submit step — record what's already there so only a
   // CHANGED data-tour-job-id counts as "the user just submitted".
@@ -116,12 +193,26 @@ export default function DemoTour({ active, onExit }) {
     setStepIndex(Math.max(0, index));
     enteredAtRef.current = Date.now();
     setStale(false);
+    setTipPos(null); // hide until the new step's tooltip is measured + placed
     // bring the new target into view once it's measured
     setTimeout(() => {
       const next = TOUR_UI_STEPS[Math.max(0, index)];
       const el = resolveTarget(next, jobId);
       el?.scrollIntoView({ block: "center", behavior: "smooth" });
     }, 350);
+    // Smooth scroll gets cancelled by layout shifts (e.g. the locked-total
+    // card appearing right as the pay step starts) — if the target is still
+    // out of view a beat later, snap it into view. One-shot, so the user's
+    // own scrolling is never fought afterwards.
+    setTimeout(() => {
+      const next = TOUR_UI_STEPS[Math.max(0, index)];
+      const el = resolveTarget(next, jobId);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.top < 0 || r.bottom > window.innerHeight) {
+        el.scrollIntoView({ block: "center", behavior: "auto" });
+      }
+    }, 1500);
   };
 
   function resolveTarget(s, jid) {
@@ -187,7 +278,12 @@ export default function DemoTour({ active, onExit }) {
 
     tick();
     const interval = setInterval(tick, TICK_MS);
-    const onMove = () => tick();
+    // scroll/resize: re-measure the target (tick) AND refresh viewport dims so
+    // the placement layout-effect re-runs and the ring + tooltip re-track
+    const onMove = () => {
+      setViewport({ w: window.innerWidth, h: window.innerHeight });
+      tick();
+    };
     window.addEventListener("resize", onMove);
     window.addEventListener("scroll", onMove, true);
     return () => {
@@ -248,11 +344,33 @@ export default function DemoTour({ active, onExit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, stepIndex, job, jobId]);
 
+  // ── place the tooltip from its REAL rendered size, overlap-free ───────────
+  // Runs after every commit (content/target/viewport can all change height or
+  // position); the guarded setState converges in one extra pass. Intentionally
+  // deps-less — it must re-measure on any render, and the guard prevents loops.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    if (!active || !tipRef.current) return;
+    const box = tipRef.current.getBoundingClientRect();
+    const holeNow = rectRef.current
+      ? {
+          top: Math.max(0, rectRef.current.top - PAD),
+          left: Math.max(0, rectRef.current.left - PAD),
+          width: rectRef.current.width + PAD * 2,
+          height: rectRef.current.height + PAD * 2,
+        }
+      : null;
+    const pos = placeTooltip(holeNow, { width: box.width, height: box.height }, window.innerWidth, window.innerHeight);
+    setTipPos((prev) =>
+      prev && Math.abs(prev.top - pos.top) < 0.5 && Math.abs(prev.left - pos.left) < 0.5 ? prev : pos
+    );
+  });
+
   if (!active) return null;
 
   // ── geometry ───────────────────────────────────────────────────────────────
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
+  const vw = viewport.w;
+  const vh = viewport.h;
   const hole = rect
     ? {
         top: Math.max(0, rect.top - PAD),
@@ -263,19 +381,20 @@ export default function DemoTour({ active, onExit }) {
     : null;
 
   const tipWidth = Math.min(step.payoff ? 560 : 340, vw - 24);
-  const estHeight = step.payoff ? 500 : step.payment ? 380 : 240;
-  let tipStyle;
-  if (hole) {
-    const below = hole.top + hole.height + 14;
-    const top = below + estHeight < vh ? below : Math.max(12, hole.top - estHeight - 14);
-    const left = Math.min(Math.max(12, hole.left), vw - tipWidth - 12);
-    tipStyle = { top, left, width: tipWidth };
-  } else {
-    tipStyle = { top: Math.max(24, vh / 2 - estHeight / 2), left: vw / 2 - tipWidth / 2, width: tipWidth };
-  }
+  // top/left come from the measured, overlap-free placement (tipPos); hidden
+  // for the one frame before the layout-effect places it (no flash at 0,0)
+  const tipStyle = {
+    width: tipWidth,
+    top: tipPos ? tipPos.top : 0,
+    left: tipPos ? tipPos.left : 0,
+    visibility: tipPos ? "visible" : "hidden",
+  };
 
   const isObserving = step.advance?.type !== "manual";
   const bodyText = step.dynamicBody ? step.dynamicBody(job) : step.body;
+  const waitingText = typeof step.waitingLabel === "function"
+    ? step.waitingLabel(job)
+    : (step.waitingLabel || "waiting…");
 
   // hide Back when the previous step's condition is already satisfied — it
   // would just bounce straight forward again on the next tick
@@ -308,7 +427,7 @@ export default function DemoTour({ active, onExit }) {
       )}
 
       {/* tooltip / callout */}
-      <div className={`tour-tip${step.payoff ? " payoff" : ""}`} style={tipStyle}>
+      <div ref={tipRef} className={`tour-tip${step.payoff ? " payoff" : ""}`} style={tipStyle}>
         <div className="tour-tip-counter">demo tour · step {stepIndex + 1} / {TOUR_UI_STEPS.length}</div>
         <div className="tour-tip-title">{step.title}</div>
         <div className="tour-tip-body">{bodyText}</div>
@@ -364,7 +483,7 @@ export default function DemoTour({ active, onExit }) {
           {isObserving ? (
             <div className="tour-wait">
               <span className="tour-wait-dot" />
-              {step.waitingLabel || "waiting…"}
+              {waitingText}
               {stale && (
                 <button type="button" className="btn btn-ghost btn-sm" onClick={() => goTo(stepIndex + 1)}>
                   skip ahead →
