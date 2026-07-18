@@ -74,6 +74,24 @@ function placeTooltip(hole, size, vw, vh) {
     }
   }
 
+  // No FULL-SIZE placement clears the target (tall tooltip + small viewport —
+  // exactly the covered-pay-button case). Cap the tooltip's height into the
+  // roomier band above/below the hole; it scrolls internally, and the
+  // placement can then never cover the target as long as the target itself
+  // doesn't fill the viewport.
+  const MIN_BAND = 140;
+  const belowSpace = vh - (hole.top + hole.height) - GAP - VM;
+  const aboveSpace = hole.top - GAP - VM;
+  if (Math.max(belowSpace, aboveSpace) >= MIN_BAND) {
+    const useBelow = belowSpace >= aboveSpace;
+    const maxHeight = Math.min(h, useBelow ? belowSpace : aboveSpace);
+    return {
+      top: useBelow ? hole.top + hole.height + GAP : hole.top - GAP - maxHeight,
+      left: clampLeft(hole.left),
+      maxHeight,
+    };
+  }
+
   // Nothing fits cleanly (tiny viewport / huge target): farthest corner.
   const hcx = hole.left + hole.width / 2;
   const hcy = hole.top + hole.height / 2;
@@ -149,6 +167,10 @@ export default function DemoTour({ active, onExit }) {
   const [outputErr, setOutputErr] = useState(null);
   const [tipPos, setTipPos] = useState(null);    // measured, overlap-free tooltip pos
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
+  // Escape valve: the user can always shrink the panel to a small pill, so no
+  // placement outcome on any device can ever hide the control they need to
+  // click. Auto-reopens on every step change.
+  const [collapsed, setCollapsed] = useState(false);
 
   const jobRef = useRef(null);
   const rectRef = useRef(null);
@@ -193,6 +215,7 @@ export default function DemoTour({ active, onExit }) {
     setStepIndex(Math.max(0, index));
     enteredAtRef.current = Date.now();
     setStale(false);
+    setCollapsed(false); // a new step always starts with the panel open
     setTipPos(null); // hide until the new step's tooltip is measured + placed
     // bring the new target into view once it's measured
     setTimeout(() => {
@@ -360,9 +383,19 @@ export default function DemoTour({ active, onExit }) {
           height: rectRef.current.height + PAD * 2,
         }
       : null;
-    const pos = placeTooltip(holeNow, { width: box.width, height: box.height }, window.innerWidth, window.innerHeight);
+    // Natural (uncapped) content height: scrollHeight ignores any inline
+    // maxHeight currently applied, so placement decisions are stable — a
+    // capped tooltip can't shrink its own measurement and flip-flop back to a
+    // full-size placement that covers the target.
+    const naturalH = Math.max(box.height, tipRef.current.scrollHeight + 2);
+    const pos = placeTooltip(holeNow, { width: box.width, height: naturalH }, window.innerWidth, window.innerHeight);
     setTipPos((prev) =>
-      prev && Math.abs(prev.top - pos.top) < 0.5 && Math.abs(prev.left - pos.left) < 0.5 ? prev : pos
+      prev &&
+      Math.abs(prev.top - pos.top) < 0.5 &&
+      Math.abs(prev.left - pos.left) < 0.5 &&
+      (prev.maxHeight || 0) === (pos.maxHeight || 0)
+        ? prev
+        : pos
     );
   });
 
@@ -388,6 +421,9 @@ export default function DemoTour({ active, onExit }) {
     top: tipPos ? tipPos.top : 0,
     left: tipPos ? tipPos.left : 0,
     visibility: tipPos ? "visible" : "hidden",
+    // Height cap from the placement engine (small viewports): the tooltip
+    // scrolls internally instead of covering the spotlighted control
+    ...(tipPos?.maxHeight ? { maxHeight: tipPos.maxHeight } : {}),
   };
 
   const isObserving = step.advance?.type !== "manual";
@@ -426,7 +462,23 @@ export default function DemoTour({ active, onExit }) {
         <div className="tour-mask" style={{ top: 0, left: 0, width: vw, height: vh }} />
       )}
 
-      {/* tooltip / callout */}
+      {/* tooltip / callout — collapsed renders as a small pill so the panel
+          can never trap the user behind it, whatever the device geometry */}
+      {collapsed ? (
+        <div ref={tipRef} className="tour-tip" style={tipStyle}>
+          <div className="tour-tip-actions" style={{ justifyContent: "flex-start" }}>
+            <span className="tour-tip-counter" style={{ margin: 0 }}>
+              step {stepIndex + 1} / {TOUR_UI_STEPS.length}
+            </span>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCollapsed(false)}>
+              show panel ▸
+            </button>
+            <button type="button" className="tour-tip-skip" style={{ margin: 0 }} onClick={onExit}>
+              skip tour
+            </button>
+          </div>
+        </div>
+      ) : (
       <div ref={tipRef} className={`tour-tip${step.payoff ? " payoff" : ""}`} style={tipStyle}>
         <div className="tour-tip-counter">demo tour · step {stepIndex + 1} / {TOUR_UI_STEPS.length}</div>
         <div className="tour-tip-title">{step.title}</div>
@@ -475,6 +527,14 @@ export default function DemoTour({ active, onExit }) {
 
         <div className="tour-tip-actions">
           <button type="button" className="tour-tip-skip" onClick={onExit}>skip tour</button>
+          <button
+            type="button"
+            className="tour-tip-skip"
+            title="Shrink this panel out of the way"
+            onClick={() => setCollapsed(true)}
+          >
+            hide panel ▾
+          </button>
           {showBack && (
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => goTo(stepIndex - 1)}>
               ← back
@@ -497,6 +557,7 @@ export default function DemoTour({ active, onExit }) {
           )}
         </div>
       </div>
+      )}
     </>,
     document.body
   );
