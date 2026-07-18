@@ -88,6 +88,43 @@ export const downloadJobFile = async (req, res) => {
   }
 };
 
+// ── POST /agent/printers ──────────────────────────────────────────────────────
+// The agent reports the printers its local spooler actually has. Pure UI
+// convenience layer (admin dropdown) — routing/dispatch never reads it.
+// shop_id and agent_token_id come ONLY from the authenticated token; rows are
+// upserted per (shop, token, name) and never pruned — last_seen_at goes stale
+// instead (UIs treat > 30 min as stale; the agent heartbeats ~every 10 min).
+export const reportPrinters = async (req, res) => {
+  const { printers } = req.body || {};
+
+  if (!Array.isArray(printers) || printers.length > 50 ||
+      !printers.every((p) => typeof p === "string" && p.trim().length > 0 && p.length <= 255)) {
+    return res.status(400).json({
+      error: "printers must be an array of ≤50 non-empty strings (≤255 chars)",
+    });
+  }
+
+  // Dedupe — a duplicate name within one statement would double-conflict
+  const names = [...new Set(printers.map((p) => p.trim()))];
+
+  try {
+    if (names.length > 0) {
+      const values = names.map((_, i) => `($1, $2, $${i + 3})`).join(", ");
+      await pool.query(
+        `INSERT INTO discovered_printers (shop_id, agent_token_id, device_name)
+         VALUES ${values}
+         ON CONFLICT (shop_id, agent_token_id, device_name)
+         DO UPDATE SET last_seen_at = NOW()`,
+        [req.shop.id, req.agentTokenId, ...names]
+      );
+    }
+    res.json({ message: "Printers reported", reported: names.length });
+  } catch (err) {
+    console.error("AGENT REPORT PRINTERS ERROR:", err.message);
+    res.status(500).json({ error: "Failed to store reported printers" });
+  }
+};
+
 // ── POST /agent/jobs/:jobId/files/:fileId/output ─────────────────────────────
 // Stores a "printed output" artifact for one file of a PRINTING job — used by
 // the demo shop's virtual worker to persist the stamped PDF (a physical agent

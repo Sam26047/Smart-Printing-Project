@@ -273,3 +273,25 @@ ON CONFLICT (username) DO NOTHING;
 -- The virtual worker's agent token is NOT seeded here (init.sql never holds a
 -- live secret): mint it once as demo_admin via POST /shops/<demoShopId>/agent-tokens
 -- and put the plaintext in .env as DEMO_AGENT_TOKEN.
+
+-- ─── Phase: Agent-reported printer discovery ──────────────────────────────────
+
+-- Printers each agent actually sees in its local spooler, reported via
+-- POST /agent/printers (per-shop token auth). Pure UI convenience layer for
+-- the admin dropdown — NOTHING in routing/dispatch reads this table; the
+-- configured `printers` rows remain the source of truth and survive agents
+-- being offline. Provenance is per token (agent machine): a two-machine shop
+-- must not merge printer sets, or an admin could configure a name that exists
+-- only on the machine that won't print it. Rows are never pruned (D5): a
+-- stale last_seen_at is the diagnostic for unplugged/renamed printers.
+-- Display staleness threshold for UIs: 30 minutes (heartbeat is ~10 min).
+CREATE TABLE IF NOT EXISTS discovered_printers (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shop_id        UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  agent_token_id UUID NOT NULL REFERENCES agent_tokens(id) ON DELETE CASCADE,
+  device_name    TEXT NOT NULL,
+  first_seen_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+  last_seen_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+  -- upsert key; its index leads with shop_id, serving the admin lookup too
+  UNIQUE (shop_id, agent_token_id, device_name)
+);

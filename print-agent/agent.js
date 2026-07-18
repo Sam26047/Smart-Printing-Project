@@ -24,7 +24,7 @@ import os from "os";
 import path from "path";
 import pkg from "pdf-to-printer";
 
-const { print } = pkg;
+const { print, getPrinters } = pkg;
 
 const BACKEND_URL  = process.env.BACKEND_URL;   // e.g. http://your-vps-ip:5000
 const AGENT_TOKEN  = process.env.AGENT_TOKEN;   // per-shop device token (pfa_...) issued via POST /shops/:shopId/agent-tokens
@@ -49,6 +49,49 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Jobs the agent is already working on — prevents double-printing if the
 // backend still shows them as PRINTING during a slow print cycle
 const inProgress = new Set();
+
+// ── printer discovery ─────────────────────────────────────────────────────────
+// Enumerate the local spooler every Nth poll (~30s — getPrinters spawns
+// PowerShell, too heavy for every 5s) and report to the backend so the admin
+// dropdown offers real names instead of hand-typed ones. POST only when the
+// set changed, plus a ~10-min heartbeat that keeps last_seen_at fresh
+// (UIs treat > 30 min as stale). The hash lives in memory, so a restart
+// always sends one startup report — that's intended.
+const DISCOVERY_EVERY_N_POLLS = 6;
+const DISCOVERY_HEARTBEAT_MS  = 10 * 60 * 1000;
+
+let lastPrinterHash = null;
+let lastReportAt    = 0;
+
+async function reportPrinters() {
+  let names;
+  try {
+    const list = await getPrinters();
+    names = [...new Set(list.map((p) => p.name))].sort();
+  } catch (err) {
+    // Spooler hiccup — never let discovery disturb the print loop
+    console.warn(`⚠  Printer enumeration failed (will retry): ${err.message}`);
+    return;
+  }
+
+  const hash = names.join("\n");
+  const heartbeatDue = Date.now() - lastReportAt > DISCOVERY_HEARTBEAT_MS;
+  if (hash === lastPrinterHash && !heartbeatDue) return;
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/agent/printers`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ printers: names }),
+    });
+    if (!res.ok) throw new Error(`POST /agent/printers → ${res.status}`);
+    lastPrinterHash = hash;
+    lastReportAt = Date.now();
+    console.log(`🔎  Reported ${names.length} local printer(s) to backend`);
+  } catch (err) {
+    console.warn(`⚠  Printer report failed (will retry): ${err.message}`);
+  }
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -148,8 +191,15 @@ async function run() {
   console.log(`    Printer : per-file device_name from backend (fallback: ${PRINTER_NAME || "none"})`);
   console.log(`    Poll    : every ${POLL_MS / 1000}s`);
 
+  let pollCount = 0;
+
   while (true) {
     try {
+      // Discovery on startup (poll 0) and every Nth poll thereafter;
+      // change-detection + heartbeat logic lives inside reportPrinters
+      if (pollCount % DISCOVERY_EVERY_N_POLLS === 0) await reportPrinters();
+      pollCount++;
+
       const jobs = await getPrintingJobs();
 
       for (const job of jobs) {

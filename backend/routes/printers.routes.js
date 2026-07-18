@@ -8,6 +8,7 @@ import { authenticate, requireAdmin } from "../middleware/auth.js";
 import {
   createPrinter,
   listPrinters,
+  listDiscoveredPrinters,
   updatePrinter,
   deletePrinter,
 } from "../controllers/printers.controller.js";
@@ -18,6 +19,8 @@ router.use(authenticate, requireAdmin);
 
 router.post("/", createPrinter);
 router.get("/", listPrinters);
+// Agent-reported spooler names (dropdown options) — before the /:id routes
+router.get("/discovered", listDiscoveredPrinters);
 router.patch("/:id", updatePrinter);   // status→ONLINE re-queues waiting jobs
 router.delete("/:id", deletePrinter);  // 409 if bound to a PRINTING job
 

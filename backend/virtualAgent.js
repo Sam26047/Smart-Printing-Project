@@ -132,12 +132,33 @@ async function processJob(job) {
   }
 }
 
+// ── printer discovery ─────────────────────────────────────────────────────────
+// The virtual worker reports its "hardware" like any real agent would — same
+// endpoint, same token auth — so the demo shop's dropdown behaves truthfully.
+// These names are this worker's device names (the seeded demo printers).
+const VIRTUAL_DEVICE_NAMES = ["VIRTUAL-BW", "VIRTUAL-COLOR"];
+let printersReported = false;
+
+async function reportVirtualPrinters() {
+  const res = await fetch(`${BASE_URL}/agent/printers`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ printers: VIRTUAL_DEVICE_NAMES }),
+  });
+  if (!res.ok) throw new Error(`report printers → ${res.status}`);
+  printersReported = true;
+  console.log(`🤖  [virtual] reported ${VIRTUAL_DEVICE_NAMES.length} virtual printers`);
+}
+
 // ── main poll loop ────────────────────────────────────────────────────────────
 async function run() {
   console.log(`🤖  Demo virtual-printer worker started (poll ${POLL_MS / 1000}s, print delay ${PRINT_DELAY_MS / 1000}s)`);
 
   while (true) {
     try {
+      // once per process lifetime, retried until the server is up
+      if (!printersReported) await reportVirtualPrinters();
+
       const res = await fetch(`${BASE_URL}/agent/jobs/printing`, { headers });
       if (res.ok) {
         const { jobs } = await res.json();

@@ -66,6 +66,9 @@ export async function requireAgentToken(req, res, next) {
     // Everything downstream scopes queries to req.shop.id — the shop identity
     // comes only from the verified token, never from a URL/body param.
     req.shop = { id: shop_id, fulfillment };
+    // Which agent (machine) is calling — printer discovery records provenance
+    // per token so multi-device shops don't merge their printer sets.
+    req.agentTokenId = tokenId;
 
     // Fire-and-forget usage tracking. NOTE: this is a DB write on the ~5s poll
     // hot path — fine at current scale; throttle to at-most-every-few-minutes

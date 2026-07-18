@@ -70,6 +70,11 @@ export const createPrinter = async (req, res) => {
 };
 
 // ── GET /printers ─────────────────────────────────────────────────────────────
+// `discovered` = at least one of this shop's agents currently reports this
+// device_name. EXISTS (semi-join), NOT a LEFT JOIN: two agents reporting the
+// same name must not duplicate the configured row. Free-text device_names
+// that were never reported stay fully allowed — this flag just lets the UI
+// mark them unverified.
 export const listPrinters = async (req, res) => {
   try {
     const adminShopId = await getAdminShopId(req.user.id);
@@ -78,13 +83,52 @@ export const listPrinters = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT * FROM printers WHERE shop_id = $1 ORDER BY created_at ASC`,
+      `SELECT p.*,
+              EXISTS (
+                SELECT 1 FROM discovered_printers d
+                WHERE d.shop_id = p.shop_id AND d.device_name = p.device_name
+              ) AS discovered
+       FROM printers p
+       WHERE p.shop_id = $1
+       ORDER BY p.created_at ASC`,
       [adminShopId]
     );
     res.json({ printers: result.rows });
   } catch (err) {
     console.error("LIST PRINTERS ERROR:", err.message);
     res.status(500).json({ error: "Failed to list printers" });
+  }
+};
+
+// ── GET /printers/discovered ──────────────────────────────────────────────────
+// Agent-reported printer names for the admin's shop — dropdown options for
+// configuring printers.device_name without hand-typing spooler names. Flat
+// list with per-token provenance (a multi-device shop reports one set per
+// machine; UIs may dedupe by name for display). Rows are never pruned; treat
+// last_seen_at older than stale_after_minutes as stale.
+const STALE_AFTER_MINUTES = 30; // agent heartbeat is ~10 min → 3× margin
+
+export const listDiscoveredPrinters = async (req, res) => {
+  try {
+    const adminShopId = await getAdminShopId(req.user.id);
+    if (!adminShopId) {
+      return res.status(403).json({ error: "Admin is not assigned to a shop" });
+    }
+
+    const result = await pool.query(
+      `SELECT d.device_name, d.first_seen_at, d.last_seen_at,
+              d.agent_token_id, t.label AS agent_label
+       FROM discovered_printers d
+       JOIN agent_tokens t ON t.id = d.agent_token_id
+       WHERE d.shop_id = $1
+       ORDER BY d.last_seen_at DESC, d.device_name ASC`,
+      [adminShopId]
+    );
+
+    res.json({ discovered: result.rows, stale_after_minutes: STALE_AFTER_MINUTES });
+  } catch (err) {
+    console.error("LIST DISCOVERED PRINTERS ERROR:", err.message);
+    res.status(500).json({ error: "Failed to list discovered printers" });
   }
 };
 

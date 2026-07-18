@@ -15,12 +15,17 @@ import {
   uploadPrintedOutput,
   agentComplete,
   agentFail,
+  reportPrinters,
 } from "../controllers/agent.controller.js";
 
 const router = express.Router();
 
 // Apply per-shop token guard to every route in this file — attaches req.shop
 router.use(requireAgentToken);
+
+// Report the printers this agent's local spooler sees (discovery — feeds the
+// admin dropdown; never read by routing/dispatch)
+router.post("/printers", reportPrinters);
 
 // Poll for jobs currently in PRINTING state
 router.get("/jobs/printing", getPrintingJobs);
