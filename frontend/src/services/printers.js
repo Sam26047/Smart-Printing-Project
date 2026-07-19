@@ -22,4 +22,11 @@ const deletePrinter = (id) => {
   return apiClient.delete(`/printers/${id}`);
 };
 
-export default { listPrinters, createPrinter, updatePrinter, deletePrinter };
+// Agent-reported spooler names (dropdown options for device_name).
+// Response: { discovered: [{device_name, last_seen_at, agent_label, ...}],
+//             stale_after_minutes }
+const getDiscovered = () => {
+  return apiClient.get("/printers/discovered");
+};
+
+export default { listPrinters, createPrinter, updatePrinter, deletePrinter, getDiscovered };

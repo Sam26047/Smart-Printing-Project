@@ -10,6 +10,9 @@ import { authenticate, requireAdmin } from "../middleware/auth.js";
 import {
   issueAgentToken,
   revokeAgentToken,
+  listAgentTokens,
+  issueAgentTokenForOwnShop,
+  revokeAgentTokenForOwnShop,
 } from "../controllers/agentTokens.controller.js";
 import {
   getShopPricing,
@@ -35,6 +38,13 @@ router.get("/", async (req, res) => {
 // Per-shop pricing (admin's own shop, resolved in the controller — no :shopId)
 router.get("/pricing", authenticate, requireAdmin, getShopPricing);
 router.put("/pricing", authenticate, requireAdmin, putShopPricing);
+
+// Agent tokens for the admin's own shop (shop resolved server-side — the
+// admin UI's path). Registered before the /:shopId routes; the :shopId
+// variants below remain for curl workflows and enforce the same ownership.
+router.get("/agent-tokens", authenticate, requireAdmin, listAgentTokens);
+router.post("/agent-tokens", authenticate, requireAdmin, issueAgentTokenForOwnShop);
+router.post("/agent-tokens/:tokenId/revoke", authenticate, requireAdmin, revokeAgentTokenForOwnShop);
 
 // Issue a new agent device token for this shop (plaintext returned once)
 router.post("/:shopId/agent-tokens", authenticate, requireAdmin, issueAgentToken);

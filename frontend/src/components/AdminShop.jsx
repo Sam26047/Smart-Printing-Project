@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import printersService from "../services/printers";
 import shopPricingService from "../services/shopPricing";
+import AgentTokensPanel from "./AgentTokensPanel";
 
 const PAPER_SIZES = ["A4", "Letter", "A3"];
 const STATUS_OPTIONS = ["ONLINE", "OFFLINE", "OUT_OF_SERVICE"];
@@ -40,10 +41,40 @@ function PrinterStatusPill({ status }) {
 }
 
 // ─── Printer add/edit form (shared) ──────────────────────────────────────────
-function PrinterForm({ initial, onSave, onCancel, saving }) {
+// device_name is picked from the printers the shop's agent(s) actually report
+// (GET /printers/discovered) so hand-typed spooler names — the classic
+// silent-print-failure — become the exception, not the rule. Free-text entry
+// stays available as the escape hatch (configuring before the agent exists).
+function PrinterForm({ initial, onSave, onCancel, saving, discovered, staleAfterMin }) {
   const [form, setForm] = useState(initial);
+  // null = auto (manual only if editing a name no agent reports)
+  const [manualChoice, setManualChoice] = useState(null);
+  // freshness snapshot taken when the form mounts — discovered data refetches
+  // on every form open, so a per-mount timestamp is accurate enough
+  const [now] = useState(() => Date.now());
 
   const set = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+
+  // Dedupe by name: one option per unique device_name, ALL reporter labels
+  // joined, freshness = the most recent report from ANY machine.
+  const byName = new Map();
+  for (const d of discovered) {
+    const e = byName.get(d.device_name) || { labels: [], lastSeen: 0 };
+    const label = d.agent_label || "unlabelled agent";
+    if (!e.labels.includes(label)) e.labels.push(label);
+    e.lastSeen = Math.max(e.lastSeen, new Date(d.last_seen_at).getTime());
+    byName.set(d.device_name, e);
+  }
+  const staleCutoff = now - (staleAfterMin || 30) * 60 * 1000;
+  const entries = [...byName.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const freshEntries = entries.filter(([, e]) => e.lastSeen >= staleCutoff);
+  const staleEntries = entries.filter(([, e]) => e.lastSeen < staleCutoff);
+
+  const noDiscovered = entries.length === 0;
+  const autoManual = initial.device_name !== "" && !byName.has(initial.device_name);
+  const manual = noDiscovered || (manualChoice ?? autoManual);
+
+  const optionText = ([name, e]) => `${name} — via ${e.labels.join(" + ")}`;
 
   const togglePaper = (size) => {
     setForm((f) => {
@@ -69,13 +100,60 @@ function PrinterForm({ initial, onSave, onCancel, saving }) {
         </div>
         <div className="form-group">
           <label className="form-label">windows device name</label>
-          <input
-            className="form-input"
-            type="text"
-            placeholder="exact name from Devices and Printers"
-            value={form.device_name}
-            onChange={(e) => set("device_name", e.target.value)}
-          />
+
+          {noDiscovered && (
+            <div className="deadline-warn" style={{ marginBottom: 8 }}>
+              <span>🔌</span>
+              <span>
+                The print agent hasn't reported any printers yet — start the agent on
+                the shop PC (check its token) and this list fills automatically.
+                Until then you can type the exact Windows printer name below.
+              </span>
+            </div>
+          )}
+
+          {manual ? (
+            <input
+              className="form-input"
+              type="text"
+              placeholder="exact name from Devices and Printers"
+              value={form.device_name}
+              onChange={(e) => set("device_name", e.target.value)}
+            />
+          ) : (
+            <select
+              className="form-select"
+              value={byName.has(form.device_name) ? form.device_name : ""}
+              onChange={(e) => set("device_name", e.target.value)}
+            >
+              <option value="">choose a discovered printer…</option>
+              {freshEntries.length > 0 && (
+                <optgroup label="reported by your agent">
+                  {freshEntries.map((en) => (
+                    <option key={en[0]} value={en[0]}>{optionText(en)}</option>
+                  ))}
+                </optgroup>
+              )}
+              {staleEntries.length > 0 && (
+                <optgroup label={`not seen in ${staleAfterMin || 30}+ min`}>
+                  {staleEntries.map((en) => (
+                    <option key={en[0]} value={en[0]}>{optionText(en)}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          )}
+
+          {!noDiscovered && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ marginTop: 6 }}
+              onClick={() => setManualChoice(!manual)}
+            >
+              {manual ? "← choose from discovered printers" : "enter device name manually"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -141,6 +219,10 @@ export default function AdminShop() {
   const [error, setError]         = useState(null);
   const [notice, setNotice]       = useState(null);
 
+  // Agent-reported spooler names (dropdown options for the form)
+  const [discovered, setDiscovered]       = useState([]);
+  const [staleAfterMin, setStaleAfterMin] = useState(30);
+
   // Pricing form state (strings so the inputs stay controlled while typing)
   const [pricing, setPricing]           = useState({ bw: "", color: "", discount: "" });
   const [pricingSaving, setPricingSaving] = useState(false);
@@ -151,6 +233,15 @@ export default function AdminShop() {
     printersService.listPrinters()
       .then((res) => setPrinters(res.data.printers || []))
       .catch(() => setError("Failed to load printers"));
+  };
+
+  const fetchDiscovered = () => {
+    printersService.getDiscovered()
+      .then((res) => {
+        setDiscovered(res.data.discovered || []);
+        if (res.data.stale_after_minutes) setStaleAfterMin(res.data.stale_after_minutes);
+      })
+      .catch(() => { /* non-critical — the form falls back to manual entry */ });
   };
 
   const fetchPricing = () => {
@@ -169,7 +260,14 @@ export default function AdminShop() {
   useEffect(() => {
     fetchPrinters();
     fetchPricing();
+    fetchDiscovered();
   }, []);
+
+  // Refresh the dropdown options whenever the add/edit form opens — a newly
+  // reported printer should be pickable without a page reload
+  useEffect(() => {
+    if (editingId !== null) fetchDiscovered();
+  }, [editingId]);
 
   const clearMessages = () => { setError(null); setNotice(null); };
 
@@ -291,6 +389,15 @@ export default function AdminShop() {
                   {(p.paper_sizes || []).map((s) => (
                     <span key={s} className="file-type-tag">{s}</span>
                   ))}
+                  {p.discovered === false && (
+                    <span
+                      className="file-type-tag"
+                      style={{ color: "var(--amber-dark)", borderColor: "var(--amber)" }}
+                      title="No agent currently reports this device name — check for a typo, or the agent may be offline"
+                    >
+                      UNVERIFIED
+                    </span>
+                  )}
                 </span>
               </div>
             </div>
@@ -333,6 +440,8 @@ export default function AdminShop() {
                     printers.find((p) => p.id === editingId)
                   )
             }
+            discovered={discovered}
+            staleAfterMin={staleAfterMin}
             saving={saving}
             onSave={handleSavePrinter}
             onCancel={() => setEditingId(null)}
@@ -342,6 +451,9 @@ export default function AdminShop() {
         {notice && <div className="alert alert-success">{notice}</div>}
         {error && <div className="alert alert-error">{error}</div>}
       </div>
+
+      {/* ── Print agent tokens ───────────────────────────────────────────── */}
+      <AgentTokensPanel />
 
       {/* ── Pricing ──────────────────────────────────────────────────────── */}
       <div className="card card-padded">
