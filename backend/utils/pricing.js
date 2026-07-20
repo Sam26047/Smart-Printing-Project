@@ -33,22 +33,15 @@ export function isUrgentDisabled(queueSize) {
 }
 
 // ─── Per-file cost (before urgency) ─────────────────────────────────────────
-// shopPricing: a shop_pricing row { bw_price_per_page, color_price_per_page,
-// duplex_discount_pct } — pg returns NUMERIC as strings, hence Number().
-export function pageRate(color, doubleSided, shopPricing) {
-  let rate = color
-    ? Number(shopPricing.color_price_per_page)
-    : Number(shopPricing.bw_price_per_page);
-  if (doubleSided) {
-    rate = rate * (1 - Number(shopPricing.duplex_discount_pct) / 100);
-  }
-  return rate;
-}
-
-// fileSettings: array of { copies, color, double_sided, page_count }
+// Rates come from CAPABILITY TIERS now: each fileSettings entry carries `rate`
+// (its tier's price_per_page, resolved by the controller). The old
+// shop_pricing multiplier math (duplex discount) dissolved into tier prices
+// at migration — proven numerically identical for all live rows.
+//
+// fileSettings: array of { copies, color, double_sided, page_count, rate }
 // (page_count is the server-side pdf-lib count — authoritative, never client-sent)
 // Returns { baseTotal, urgencyExtra, grandTotal, breakdown[] }
-export function calculateJobCost(fileSettings, urgencyMultiplier, shopPricing) {
+export function calculateJobCost(fileSettings, urgencyMultiplier) {
   let baseTotal = 0;
 
   const breakdown = fileSettings.map((s, i) => {
@@ -56,7 +49,7 @@ export function calculateJobCost(fileSettings, urgencyMultiplier, shopPricing) {
     const color          = Boolean(s.color);
     const doubleSided    = Boolean(s.double_sided);
     const estimatedPages = parseInt(s.page_count) || 1;
-    const rate           = pageRate(color, doubleSided, shopPricing);
+    const rate           = Number(s.rate) || 0;
     const fileCost       = rate * estimatedPages * copies;
 
     baseTotal += fileCost;

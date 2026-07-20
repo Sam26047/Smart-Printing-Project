@@ -48,6 +48,12 @@ There is no automated test runner anywhere in this repo currently — verify cha
   amount; the authoritative cost is always computed in backend/utils/pricing.js.
 - Keep agent auth (per-shop device tokens, x-agent-token header) and user auth
   (JWT) separate — never route /agent/* through `authenticate`.
+- Capability-tier invariant: a job file's print settings (colour/duplex) and
+  its price derive from its TIER (capability_tiers via job_files.tier_id),
+  never from whichever printer gets picked. Routing selects any ONLINE printer
+  ASSIGNED to the file's tier (printer_tiers, hardware-validated at assignment
+  time); device choice must never change output or cost. Don't reintroduce
+  per-printer pricing or cross-tier reassignment.
 - The print agent is never part of the Docker stack and never deployed to the VPS.
 
 ## Frontend styling

@@ -2,39 +2,43 @@
 // Per-file printer routing. Shared by the worker dispatch loop and the
 // reassign-file re-dispatch so the rules can never drift apart.
 //
-// A printer is ELIGIBLE for a file iff ALL of:
+// CAPABILITY TIERS: a printer is ELIGIBLE for a file iff ALL of:
 //   • same shop as the job
 //   • status = 'ONLINE'  (manual shopkeeper toggle)
+//   • ASSIGNED to the file's tier (printer_tiers — hardware-validated at
+//     assignment time, so capability flags need no re-check here)
 //   • file.paper_size ∈ printer.paper_sizes
-//   • file.double_sided = false OR printer.supports_duplex
-//   • color tier, STRICT — no fallback:
-//       color file → supports_color = TRUE
-//       B&W file   → supports_color = FALSE  (never route B&W to the inkjet,
-//                    even if it's the only printer online — by design)
+//
+// The old strict colour rule is preserved by a stronger invariant: a file's
+// print settings (colour/duplex) derive from its TIER, never from the device
+// picked — so a B&W-tier job prints monochrome at the B&W price on whatever
+// tier-assigned device takes it, and a colour tier can only contain
+// colour-capable hardware.
 //
 // Dispatch is all-or-nothing per job: every file resolves → bind printer_id on
 // each file + flip job to PRINTING in one transaction; ANY file unroutable →
 // flip to WAITING_FOR_PRINTER and bind nothing.
 //
-// Manual pins (job_files.printer_id already set by reassign-file) are kept:
-// auto-routing only touches files with printer_id IS NULL, and re-validates
-// that a pinned file's printer is still ONLINE (if not, the job is unroutable).
+// Manual pins (job_files.printer_id set by reassign-file) are kept: auto-
+// routing only touches files with printer_id IS NULL, and re-validates that a
+// pinned printer is still ONLINE AND still assigned to the file's tier.
 
 import pool from "../db/pool.js";
 
 // Oldest-created eligible printer wins — deterministic; load balancing later.
 async function findEligiblePrinter(shopId, file) {
+  if (!file.tier_id) return null; // tier deleted (FK SET NULL) → unroutable
   const result = await pool.query(
-    `SELECT id, device_name
-     FROM printers
-     WHERE shop_id = $1
-       AND status = 'ONLINE'
-       AND supports_color = $2
-       AND $3 = ANY(paper_sizes)
-       AND ($4 = FALSE OR supports_duplex = TRUE)
-     ORDER BY created_at ASC
+    `SELECT p.id, p.device_name
+     FROM printers p
+     JOIN printer_tiers pt ON pt.printer_id = p.id
+     WHERE p.shop_id = $1
+       AND pt.tier_id = $2
+       AND p.status = 'ONLINE'
+       AND $3 = ANY(p.paper_sizes)
+     ORDER BY p.created_at ASC
      LIMIT 1`,
-    [shopId, file.color, file.paper_size, file.double_sided]
+    [shopId, file.tier_id, file.paper_size]
   );
   return result.rows[0] || null;
 }
@@ -56,8 +60,12 @@ export async function attemptDispatch(jobId) {
   }
 
   const filesRes = await pool.query(
-    `SELECT f.id, f.color, f.double_sided, f.paper_size, f.printer_id,
-            p.status AS pinned_printer_status
+    `SELECT f.id, f.tier_id, f.paper_size, f.printer_id,
+            p.status AS pinned_printer_status,
+            EXISTS (
+              SELECT 1 FROM printer_tiers pt
+              WHERE pt.printer_id = f.printer_id AND pt.tier_id = f.tier_id
+            ) AS pinned_in_tier
      FROM job_files f
      LEFT JOIN printers p ON p.id = f.printer_id
      WHERE f.job_id = $1`,
@@ -69,8 +77,9 @@ export async function attemptDispatch(jobId) {
 
   for (const file of filesRes.rows) {
     if (file.printer_id) {
-      // Manual pin from reassign-file — keep it, but its printer must be ONLINE
-      if (file.pinned_printer_status !== "ONLINE") {
+      // Manual pin from reassign-file — keep it, but its printer must be
+      // ONLINE and still assigned to the file's tier
+      if (file.pinned_printer_status !== "ONLINE" || !file.pinned_in_tier) {
         unroutable = true;
         break;
       }

@@ -12,6 +12,10 @@ import {
   updatePrinter,
   deletePrinter,
 } from "../controllers/printers.controller.js";
+import {
+  assignPrinterTier,
+  unassignPrinterTier,
+} from "../controllers/tiers.controller.js";
 
 const router = express.Router();
 
@@ -23,5 +27,10 @@ router.get("/", listPrinters);
 router.get("/discovered", listDiscoveredPrinters);
 router.patch("/:id", updatePrinter);   // status→ONLINE re-queues waiting jobs
 router.delete("/:id", deletePrinter);  // 409 if bound to a PRINTING job
+
+// Tier assignment (hardware-validated; assignment re-queues waiting jobs —
+// this is the admin recovery path when a tier's hardware is down)
+router.post("/:id/tiers", assignPrinterTier);
+router.delete("/:id/tiers/:tierId", unassignPrinterTier);
 
 export default router;

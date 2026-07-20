@@ -274,6 +274,78 @@ ON CONFLICT (username) DO NOTHING;
 -- live secret): mint it once as demo_admin via POST /shops/<demoShopId>/agent-tokens
 -- and put the plaintext in .env as DEMO_AGENT_TOKEN.
 
+-- ─── Phase: Capability tiers ──────────────────────────────────────────────────
+
+-- A tier is a named, priced bundle of capabilities (colour × duplex) per shop.
+-- Students select a tier per FILE, never a device; pricing is per-tier; routing
+-- picks any ONLINE printer assigned to the file's tier. INVARIANT: a file's
+-- print settings (colour/duplex flags sent to the device) derive from its
+-- TIER, never from which printer got picked — so device choice can never
+-- change output or price. The fixed 4-combo set is seeded per shop; the
+-- schema doesn't hardcode four.
+CREATE TABLE IF NOT EXISTS capability_tiers (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shop_id        UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  color          BOOLEAN NOT NULL,
+  duplex         BOOLEAN NOT NULL,
+  name           TEXT NOT NULL,
+  price_per_page NUMERIC(10,2) NOT NULL,
+  created_at     TIMESTAMP DEFAULT NOW(),
+  UNIQUE (shop_id, color, duplex)
+);
+
+-- Printer ↔ tier assignment (many-to-many: a colour-duplex machine may serve
+-- all four tiers). Assignments are hardware-validated at write time — a tier
+-- requiring colour/duplex only accepts printers that support it.
+CREATE TABLE IF NOT EXISTS printer_tiers (
+  printer_id UUID NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+  tier_id    UUID NOT NULL REFERENCES capability_tiers(id) ON DELETE CASCADE,
+  PRIMARY KEY (printer_id, tier_id)
+);
+
+-- Each file carries its tier; color/double_sided on job_files remain as the
+-- DERIVED print instructions (the agent contract is unchanged).
+ALTER TABLE job_files
+ADD COLUMN IF NOT EXISTS tier_id UUID REFERENCES capability_tiers(id) ON DELETE SET NULL;
+
+-- Migration 1/3: seed the 4 tiers per shop from shop_pricing. The duplex
+-- discount dissolves INTO the duplex tiers' prices (proven numerically
+-- identical for all live rows — both shops have discount 0). shop_pricing is
+-- frozen afterwards as pre-migration audit data; nothing reads it for pricing.
+INSERT INTO capability_tiers (shop_id, color, duplex, name, price_per_page)
+SELECT sp.shop_id, c.color, d.duplex,
+       (CASE WHEN c.color THEN 'Colour' ELSE 'B&W' END) ||
+       (CASE WHEN d.duplex THEN ' duplex' ELSE ' single-sided' END),
+       ROUND((CASE WHEN c.color THEN sp.color_price_per_page ELSE sp.bw_price_per_page END)
+             * (CASE WHEN d.duplex THEN 1 - sp.duplex_discount_pct / 100 ELSE 1 END), 2)
+FROM shop_pricing sp
+CROSS JOIN (VALUES (FALSE), (TRUE)) AS c(color)
+CROSS JOIN (VALUES (FALSE), (TRUE)) AS d(duplex)
+ON CONFLICT (shop_id, color, duplex) DO NOTHING;
+
+-- Migration 2/3: behaviour-preserving printer backfill — reproduces today's
+-- strict routing exactly (colour machines are NOT put into B&W tiers; that
+-- broadening is a deliberate admin action later, via the validated endpoint).
+INSERT INTO printer_tiers (printer_id, tier_id)
+SELECT p.id, t.id
+FROM printers p
+JOIN capability_tiers t
+  ON t.shop_id = p.shop_id
+ AND t.color = p.supports_color
+ AND (NOT t.duplex OR p.supports_duplex)
+ON CONFLICT DO NOTHING;
+
+-- Migration 3/3: map existing/in-flight job files onto their shop's matching
+-- tier. estimated_cost stays locked — references only, no repricing.
+UPDATE job_files f
+SET tier_id = t.id
+FROM print_jobs j, capability_tiers t
+WHERE f.job_id = j.id
+  AND f.tier_id IS NULL
+  AND t.shop_id = j.shop_id
+  AND t.color = f.color
+  AND t.duplex = f.double_sided;
+
 -- ─── Phase: Agent-reported printer discovery ──────────────────────────────────
 
 -- Printers each agent actually sees in its local spooler, reported via

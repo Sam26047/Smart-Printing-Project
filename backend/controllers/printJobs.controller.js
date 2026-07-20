@@ -62,6 +62,54 @@ async function resolveShopId(rawShopId) {
   return { error: "shop_id is required when multiple shops exist" };
 }
 
+// ─── Helper: a shop's capability tiers, indexed for resolution ───────────────
+async function getShopTiers(shopId) {
+  const result = await pool.query(
+    `SELECT id, color, duplex, name, price_per_page
+     FROM capability_tiers WHERE shop_id = $1`,
+    [shopId]
+  );
+  const byId = {};
+  const byCombo = {};
+  for (const t of result.rows) {
+    byId[t.id] = t;
+    byCombo[`${t.color}|${t.duplex}`] = t;
+  }
+  return { list: result.rows, byId, byCombo };
+}
+
+// ─── Helper: which of these tiers have ≥1 ONLINE printer assigned ────────────
+async function availableTierIds(tierIds) {
+  if (tierIds.length === 0) return new Set();
+  const result = await pool.query(
+    `SELECT DISTINCT pt.tier_id
+     FROM printer_tiers pt
+     JOIN printers p ON p.id = pt.printer_id
+     WHERE pt.tier_id = ANY($1) AND p.status = 'ONLINE'`,
+    [tierIds]
+  );
+  return new Set(result.rows.map((r) => r.tier_id));
+}
+
+// ─── Helper: resolve one file's tier from its settings entry ─────────────────
+// Accepts EITHER an explicit tier_id OR the legacy color/double_sided flags.
+// ⚠ TEMPORARY DUAL INPUT (E7): the legacy flag path exists ONLY to keep the
+// current frontend and demo tour working until the student-UI prompt ships
+// explicit tier_id. Once it does, this fallback is REMOVED in a hard cutover —
+// same as AGENT_SECRET, no permanent fallback.
+function resolveTier(tiers, s) {
+  if (s?.tier_id) {
+    const tier = tiers.byId[s.tier_id];
+    return tier ? { tier } : { error: "Unknown tier for this shop" };
+  }
+  const color = s?.color === true || s?.color === "true";
+  const duplex = s?.double_sided === true || s?.double_sided === "true";
+  const tier = tiers.byCombo[`${color}|${duplex}`];
+  return tier
+    ? { tier }
+    : { error: `This shop has no ${color ? "colour" : "B&W"} ${duplex ? "duplex" : "single-sided"} tier` };
+}
+
 // ─── Helper: get current QUEUED job count (used for dynamic pricing + peak check) ───
 // Scoped per shop when shopId is given — one shop being slammed shouldn't
 // raise prices or disable URGENT at another shop.
@@ -180,12 +228,12 @@ export const estimatePrintJob = async (req, res) => {
     }
     const shopId = shopResolution.shopId;
 
-    const pricingRes = await pool.query(
-      `SELECT bw_price_per_page, color_price_per_page, duplex_discount_pct
-       FROM shop_pricing WHERE shop_id = $1`,
-      [shopId]
-    );
-    if (pricingRes.rows.length === 0) {
+    // Tier resolution — dual input (explicit tier_id OR legacy flags, see the
+    // ⚠ TEMPORARY note on resolveTier: legacy path dies in a hard cutover once
+    // the student UI sends tier_id). Estimates stay permissive on
+    // availability — they're a read-only preview; submission enforces it.
+    const tiers = await getShopTiers(shopId);
+    if (tiers.list.length === 0) {
       return res.status(400).json({ error: "Shop pricing not configured" });
     }
 
@@ -194,13 +242,19 @@ export const estimatePrintJob = async (req, res) => {
 
     // Strip any client-sent page_count — estimates always price at 1 page/file
     // (calculateJobCost's default); the server never trusts client page counts.
-    const clean = settings.map((s) => ({
-      copies: s.copies,
-      color: s.color,
-      double_sided: s.double_sided,
-    }));
+    const clean = [];
+    for (const s of settings) {
+      const r = resolveTier(tiers, s);
+      if (r.error) return res.status(400).json({ error: r.error });
+      clean.push({
+        copies: s.copies,
+        color: r.tier.color,
+        double_sided: r.tier.duplex,
+        rate: Number(r.tier.price_per_page),
+      });
+    }
 
-    const pricing = calculateJobCost(clean, multiplier, pricingRes.rows[0]);
+    const pricing = calculateJobCost(clean, multiplier);
 
     res.json({
       estimate: true, // page counts assumed 1/file — final total locked at submission
@@ -253,16 +307,39 @@ export const createPrintJob = async (req, res) => {
     }
     const shopId = shopResolution.shopId;
 
-    // ─── Shop pricing (per-shop rates; server is the source of truth) ─────────
-    const pricingRes = await pool.query(
-      `SELECT bw_price_per_page, color_price_per_page, duplex_discount_pct
-       FROM shop_pricing WHERE shop_id = $1`,
-      [shopId]
-    );
-    if (pricingRes.rows.length === 0) {
+    // ─── Capability tiers: resolve each file's tier + enforce availability ───
+    // (server is the pricing source of truth; the tier also DICTATES the
+    // file's print settings — invariant: settings derive from the tier, never
+    // from the device that eventually prints it)
+    const tiers = await getShopTiers(shopId);
+    if (tiers.list.length === 0) {
+      for (const f of req.files) { try { fs.unlinkSync(f.path); } catch { /* gone */ } }
       return res.status(400).json({ error: "Shop pricing not configured" });
     }
-    const shopPricing = pricingRes.rows[0];
+
+    const fileTiers = [];
+    for (let i = 0; i < req.files.length; i++) {
+      const r = resolveTier(tiers, settings[i]);
+      if (r.error) {
+        for (const f of req.files) { try { fs.unlinkSync(f.path); } catch { /* gone */ } }
+        return res.status(400).json({ error: r.error });
+      }
+      fileTiers.push(r.tier);
+    }
+
+    // A tier is submittable only while ≥1 ONLINE printer serves it — the
+    // capability mismatch stops here instead of surprising the admin later.
+    // (Printers going offline AFTER submission still park the job in
+    // WAITING_FOR_PRINTER, unchanged.)
+    const usedTierIds = [...new Set(fileTiers.map((t) => t.id))];
+    const availSet = await availableTierIds(usedTierIds);
+    const unavailable = fileTiers.find((t) => !availSet.has(t.id));
+    if (unavailable) {
+      for (const f of req.files) { try { fs.unlinkSync(f.path); } catch { /* gone */ } }
+      return res.status(400).json({
+        error: `'${unavailable.name}' is currently unavailable at this shop — no online printer supports it`,
+      });
+    }
 
     // ─── Server-authoritative page counts + landscape rotation (pdf-lib) ─────
     // Done BEFORE the urgency checks so a corrupt upload can't burn an URGENT
@@ -316,11 +393,16 @@ export const createPrintJob = async (req, res) => {
       }
     }
 
-    // One settings entry per uploaded file (files beyond the provided settings
-    // get defaults), each carrying its real page count for pricing.
+    // One settings entry per uploaded file, carrying its real page count and
+    // its TIER-derived print settings + rate. color/double_sided come from the
+    // tier — never from the client, never from the device (the invariant).
     settings = req.files.map((_, i) => ({
       ...(settings[i] || {}),
       page_count: pageCounts[i],
+      color: fileTiers[i].color,
+      double_sided: fileTiers[i].duplex,
+      rate: Number(fileTiers[i].price_per_page),
+      tier_id: fileTiers[i].id,
     }));
 
     // ─── Current queue size — needed for dynamic pricing + peak check ─────────
@@ -390,7 +472,7 @@ export const createPrintJob = async (req, res) => {
     // the multiplier is queue-size-dependent so it can't be re-derived later,
     // and reassign-file needs it to recompute the price exactly.
     const multiplier = getUrgencyMultiplier(urgency_level, queueSize);
-    const pricing    = calculateJobCost(settings, multiplier, shopPricing);
+    const pricing    = calculateJobCost(settings, multiplier);
 
     // 1️⃣ Create job — urgency_level stored alongside deadline for worker sorting
     // ❗ copies/color/double_sided moved to per-file level (job_files table)
@@ -424,9 +506,9 @@ export const createPrintJob = async (req, res) => {
 
       return pool.query(
         `INSERT INTO job_files
-          (job_id, file_name, file_path, copies, color, double_sided, orientation, paper_size, page_count)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [jobId, file.originalname, file.path, copies, color, double_sided, orientation, paper_size, s.page_count]
+          (job_id, file_name, file_path, copies, color, double_sided, orientation, paper_size, page_count, tier_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [jobId, file.originalname, file.path, copies, color, double_sided, orientation, paper_size, s.page_count, s.tier_id]
       );
     });
 
@@ -666,17 +748,18 @@ export const regenerateOtp = async (req, res) => {
   }
 };
 
-// ─── POST /print-jobs/:id/reassign-file — shopkeeper override ────────────────
-// Reassigns ONE file of a WAITING_FOR_PRINTER job to a printer of a different
-// color tier (e.g. force a B&W file onto the color inkjet when the laser is
-// down). Paper size and duplex must still be satisfied — only the color-tier
-// rule is relaxed. The overridden file is re-priced at the PINNED PRINTER'S
-// tier (B&W file on the inkjet charges the color rate — that's why this needs
-// an explicit confirm), estimated_cost is recomputed with the job's stored
-// urgency_multiplier and re-locked, then dispatch is re-attempted immediately.
+// ─── POST /print-jobs/:id/reassign-file — same-tier device pinning ───────────
+// Under capability tiers the price is locked to the TIER and can never change
+// with device choice, so the old cross-tier reassign (which re-priced a paid
+// job) is GONE. This endpoint now pins one file of a WAITING_FOR_PRINTER job
+// to a specific ONLINE printer WITHIN the file's tier — no price change, no
+// confirm step (the server never returns confirm_required anymore; the old
+// price-confirm UI in AdminJobRow is dead code for the admin prompt to
+// remove). Recovery when a whole tier's hardware is down: assign another
+// capable printer to the tier (validated endpoint), which auto-requeues.
 export const reassignFile = async (req, res) => {
   const { id: jobId } = req.params;
-  const { file_id, printer_id, confirm } = req.body || {};
+  const { file_id, printer_id } = req.body || {};
 
   if (!file_id || !printer_id || !UUID_RE.test(file_id) || !UUID_RE.test(printer_id)) {
     return res.status(400).json({ error: "file_id and printer_id (UUIDs) are required" });
@@ -690,129 +773,70 @@ export const reassignFile = async (req, res) => {
 
     // Job must be in this admin's shop and actually blocked
     const jobRes = await pool.query(
-      `SELECT id, status, urgency_level, urgency_multiplier, estimated_cost
-       FROM print_jobs WHERE id = $1 AND shop_id = $2`,
+      `SELECT id, status FROM print_jobs WHERE id = $1 AND shop_id = $2`,
       [jobId, adminShopId]
     );
     if (jobRes.rows.length === 0) {
       return res.status(404).json({ error: "Job not found" });
     }
-    const job = jobRes.rows[0];
-    if (job.status !== "WAITING_FOR_PRINTER") {
+    if (jobRes.rows[0].status !== "WAITING_FOR_PRINTER") {
       return res.status(400).json({
-        error: `Only WAITING_FOR_PRINTER jobs can be reassigned (job is ${job.status})`,
+        error: `Only WAITING_FOR_PRINTER jobs can be reassigned (job is ${jobRes.rows[0].status})`,
       });
     }
 
-    // File must belong to the job
+    // File must belong to the job and carry a tier
     const fileRes = await pool.query(
-      `SELECT id, color, double_sided, paper_size
-       FROM job_files WHERE id = $1 AND job_id = $2`,
+      `SELECT id, tier_id, paper_size FROM job_files WHERE id = $1 AND job_id = $2`,
       [file_id, jobId]
     );
     if (fileRes.rows.length === 0) {
       return res.status(404).json({ error: "File not found on this job" });
     }
     const file = fileRes.rows[0];
+    if (!file.tier_id) {
+      return res.status(400).json({ error: "File has no tier (tier was deleted) — reassign the tier's printers instead" });
+    }
 
-    // Target printer: same shop, ONLINE, and satisfies paper + duplex.
-    // Color tier is deliberately NOT checked — this override exists precisely
-    // to cross tiers.
+    // Target printer: same shop, ONLINE, assigned to the FILE'S TIER, paper ok
     const printerRes = await pool.query(
-      `SELECT id, label, status, supports_color, supports_duplex, paper_sizes
-       FROM printers WHERE id = $1 AND shop_id = $2`,
-      [printer_id, adminShopId]
+      `SELECT p.id, p.label, p.status, p.paper_sizes,
+              EXISTS (SELECT 1 FROM printer_tiers pt
+                      WHERE pt.printer_id = p.id AND pt.tier_id = $3) AS in_tier
+       FROM printers p WHERE p.id = $1 AND p.shop_id = $2`,
+      [printer_id, adminShopId, file.tier_id]
     );
     if (printerRes.rows.length === 0) {
       return res.status(404).json({ error: "Printer not found" });
     }
     const printer = printerRes.rows[0];
+    if (!printer.in_tier) {
+      return res.status(400).json({
+        error: "Printer is not assigned to this file's tier — assign it to the tier first",
+      });
+    }
     if (printer.status !== "ONLINE") {
       return res.status(400).json({ error: `Printer is ${printer.status}, not ONLINE` });
     }
     if (!printer.paper_sizes.includes(file.paper_size)) {
       return res.status(400).json({ error: `Printer does not support ${file.paper_size}` });
     }
-    if (file.double_sided && !printer.supports_duplex) {
-      return res.status(400).json({ error: "Printer does not support duplex" });
-    }
 
-    // ─── Recompute the locked price ──────────────────────────────────────────
-    // Pinned files price at their printer's tier; unpinned files by file.color.
-    const shopPricingRes = await pool.query(
-      `SELECT bw_price_per_page, color_price_per_page, duplex_discount_pct
-       FROM shop_pricing WHERE shop_id = $1`,
-      [adminShopId]
-    );
-    if (shopPricingRes.rows.length === 0) {
-      return res.status(400).json({ error: "Shop pricing not configured" });
-    }
-    const shopPricing = shopPricingRes.rows[0];
-
-    const allFilesRes = await pool.query(
-      `SELECT f.id, f.copies, f.color, f.double_sided, f.page_count,
-              p.supports_color AS pinned_supports_color
-       FROM job_files f
-       LEFT JOIN printers p ON p.id = f.printer_id
-       WHERE f.job_id = $1`,
+    // Pin, requeue, re-attempt dispatch. estimated_cost is untouched — that's
+    // the whole point of tiers.
+    await pool.query(`UPDATE job_files SET printer_id = $1 WHERE id = $2`, [printer_id, file_id]);
+    await pool.query(
+      `UPDATE print_jobs SET status = 'QUEUED'
+       WHERE id = $1 AND status = 'WAITING_FOR_PRINTER'`,
       [jobId]
     );
-
-    const settings = allFilesRes.rows.map((f) => ({
-      copies: f.copies,
-      // effective tier: the file being reassigned → target printer's tier;
-      // an already-pinned file → its pinned printer's tier; else file.color
-      color:
-        f.id === file_id
-          ? printer.supports_color
-          : f.pinned_supports_color !== null
-            ? f.pinned_supports_color
-            : f.color,
-      double_sided: f.double_sided,
-      page_count: f.page_count,
-    }));
-
-    // Stored multiplier keeps the price exact (it was queue-size-dependent at
-    // submission). Fallback for pre-migration jobs without one.
-    const multiplier =
-      job.urgency_multiplier !== null
-        ? Number(job.urgency_multiplier)
-        : getUrgencyMultiplier(job.urgency_level, 0);
-
-    const pricing = calculateJobCost(settings, multiplier, shopPricing);
-
-    // Price changes tiers → require explicit confirmation, echoing the new
-    // price so the dashboard can show a confirm dialog.
-    if (confirm !== true) {
-      return res.status(400).json({
-        error: "Confirmation required — this reassignment changes the price",
-        current_estimated_cost: Number(job.estimated_cost),
-        new_estimated_cost: pricing.grandTotal,
-        confirm_required: true,
-      });
-    }
-
-    // Pin the file, re-lock the cost, put the job back in the queue…
-    await pool.query(`UPDATE job_files SET printer_id = $1 WHERE id = $2`, [
-      printer_id,
-      file_id,
-    ]);
-    await pool.query(
-      `UPDATE print_jobs SET estimated_cost = $1, status = 'QUEUED'
-       WHERE id = $2 AND status = 'WAITING_FOR_PRINTER'`,
-      [pricing.grandTotal, jobId]
-    );
-
-    // …and re-attempt dispatch right away (other files may still block, in
-    // which case the job returns to WAITING_FOR_PRINTER with the pin kept).
     const dispatch = await attemptDispatch(jobId);
 
     res.json({
-      message: "File reassigned",
+      message: "File pinned within its tier",
       job_id: jobId,
       file_id,
       pinned_printer: printer.label,
-      new_estimated_cost: pricing.grandTotal,
       dispatched: dispatch.dispatched,
       job_status: dispatch.dispatched ? "PRINTING" : "WAITING_FOR_PRINTER",
     });

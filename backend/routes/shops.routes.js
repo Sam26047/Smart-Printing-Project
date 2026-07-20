@@ -18,6 +18,7 @@ import {
   getShopPricing,
   putShopPricing,
 } from "../controllers/shopPricing.controller.js";
+import { listTiers, updateTier } from "../controllers/tiers.controller.js";
 
 const router = express.Router();
 
@@ -34,6 +35,12 @@ router.get("/", async (req, res) => {
     res.status(500).json({ error: "Failed to list shops" });
   }
 });
+
+// Capability tiers: catalog + availability (students pass ?shop_id, admins
+// omit it and get their own shop with printer detail); price/name editing is
+// admin-only. Registered before the /:shopId routes.
+router.get("/tiers", authenticate, listTiers);
+router.patch("/tiers/:tierId", authenticate, requireAdmin, updateTier);
 
 // Per-shop pricing (admin's own shop, resolved in the controller — no :shopId)
 router.get("/pricing", authenticate, requireAdmin, getShopPricing);
