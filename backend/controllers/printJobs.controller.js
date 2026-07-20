@@ -1,7 +1,7 @@
 // backend/controllers/printJobs.controller.js
 import fs from "fs";
 import path from "path";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, degrees } from "pdf-lib";
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
 import { sendOTPEmail, sendStatusEmail } from "../services/emailService.js";
@@ -264,18 +264,48 @@ export const createPrintJob = async (req, res) => {
     }
     const shopPricing = pricingRes.rows[0];
 
-    // ─── Server-authoritative page counts (pdf-lib) ───────────────────────────
+    // ─── Server-authoritative page counts + landscape rotation (pdf-lib) ─────
     // Done BEFORE the urgency checks so a corrupt upload can't burn an URGENT
     // quota slot. A PDF we can't parse is a hard 400 and the uploads are
     // removed — we never guess a page count.
+    //
+    // Orientation is applied HERE, at submission, by page rotation — never by
+    // spooler flags (driver-dependent) and never by the agent. Rule:
+    //   • "portrait" (the unconscious default) is INERT — zero behavior change
+    //   • "landscape" rotates only pages whose EFFECTIVE visual orientation is
+    //     portrait. Effective = MediaBox dims combined with any existing
+    //     /Rotate — MediaBox alone would send an already-/Rotate-90 page to
+    //     180 (upside down). This also makes the operation idempotent: a page
+    //     that is effectively landscape (rotated by us or by the source) is
+    //     never touched again.
+    // The stored upload is OVERWRITTEN with the rotated bytes — the stored
+    // file IS the job file; original bytes are not retained (see CLAUDE.md).
     const pageCounts = [];
-    for (const file of req.files) {
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
       try {
         const bytes = fs.readFileSync(file.path);
         // ignoreEncryption: password-protected PDFs still have a readable page
         // tree and usually print fine; truly corrupt files still throw.
         const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
         pageCounts.push(doc.getPageCount());
+
+        if (settings[i]?.orientation === "landscape") {
+          let rotatedAny = false;
+          for (const page of doc.getPages()) {
+            const { width, height } = page.getSize(); // MediaBox — ignores /Rotate
+            const rot = ((page.getRotation().angle % 360) + 360) % 360;
+            const sideways = rot === 90 || rot === 270;
+            const effectivelyLandscape = sideways ? height > width : width > height;
+            if (!effectivelyLandscape && width !== height) { // square pages: nothing to do
+              page.setRotation(degrees(rot + 90));
+              rotatedAny = true;
+            }
+          }
+          if (rotatedAny) {
+            fs.writeFileSync(file.path, await doc.save());
+          }
+        }
       } catch {
         for (const f of req.files) {
           try { fs.unlinkSync(f.path); } catch { /* already gone */ }

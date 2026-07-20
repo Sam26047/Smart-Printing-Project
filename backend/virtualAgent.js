@@ -38,6 +38,26 @@ const inProgress = new Set();
 // The ✓ is drawn as two vector lines: pdf-lib's standard fonts are WinAnsi-
 // encoded and cannot encode U+2713, and embedding a unicode font would need a
 // new dependency (@pdf-lib/fontkit) — not allowed here.
+//
+// ROTATION-AWARE: pdf-lib draws in the page's UNROTATED coordinate space, but
+// pages may carry /Rotate — set by the landscape feature at submission OR
+// already present in the source PDF. The compensation below derives purely
+// from page.getRotation() (never from what our own code applied), laying the
+// stamp out in VISUAL space and mapping back, so it reads at the same angle
+// and position on any page.
+
+// Map a point from VISUAL space (what the viewer sees; origin bottom-left of
+// the displayed page) back to PDF user space, for a page displayed rotated
+// clockwise by R degrees. w/h are the unrotated MediaBox dimensions.
+function toPdfSpace(vx, vy, R, w, h) {
+  switch (R) {
+    case 90:  return { x: w - vy, y: vx };
+    case 180: return { x: w - vx, y: h - vy };
+    case 270: return { x: vy, y: h - vx };
+    default:  return { x: vx, y: vy };
+  }
+}
+
 async function stampPdf(bytes) {
   const doc  = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const font = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -46,27 +66,46 @@ async function stampPdf(bytes) {
   const amber = rgb(0.71, 0.33, 0.04); // --amber-dark
 
   for (const page of doc.getPages()) {
-    const { width, height } = page.getSize();
-    const size = Math.max(14, Math.min(22, width / 30));
+    const { width: w, height: h } = page.getSize(); // MediaBox (unrotated)
+    const R = ((page.getRotation().angle % 360) + 360) % 360;
+    const sideways = R === 90 || R === 270;
+    const vw = sideways ? h : w; // visual dimensions
+    const vh = sideways ? w : h;
+
+    const size = Math.max(14, Math.min(22, vw / 30));
     const textWidth = font.widthOfTextAtSize(stampText, size);
 
-    // Diagonal watermark across the page
+    // Content drawn at PDF-space angle θ appears at θ − R after the viewer's
+    // clockwise rotation — so to APPEAR at 30°, draw at 30 + R.
+    const drawAngle = 30 + R;
+
+    // Diagonal watermark, anchored at the visual centre-left of the page
+    const anchor = toPdfSpace(vw / 2 - textWidth / 2, vh / 2, R, w, h);
     page.drawText(stampText, {
-      x: width / 2 - textWidth / 2,
-      y: height / 2,
+      x: anchor.x,
+      y: anchor.y,
       size,
       font,
       color: amber,
       opacity: 0.45,
-      rotate: degrees(30),
+      rotate: degrees(drawAngle),
     });
 
-    // The ✓, drawn as vectors just left of the text baseline
-    const cx = width / 2 - textWidth / 2 - 26;
-    const cy = height / 2 - 4;
+    // The ✓, drawn as vectors just left of the text baseline — endpoints laid
+    // out in visual space, then mapped through the same transform
+    const cx = vw / 2 - textWidth / 2 - 26;
+    const cy = vh / 2 - 4;
     const tick = { thickness: 3, color: amber, opacity: 0.45 };
-    page.drawLine({ start: { x: cx, y: cy + 6 },  end: { x: cx + 6,  y: cy },     ...tick });
-    page.drawLine({ start: { x: cx + 6, y: cy },  end: { x: cx + 16, y: cy + 14 }, ...tick });
+    page.drawLine({
+      start: toPdfSpace(cx, cy + 6, R, w, h),
+      end:   toPdfSpace(cx + 6, cy, R, w, h),
+      ...tick,
+    });
+    page.drawLine({
+      start: toPdfSpace(cx + 6, cy, R, w, h),
+      end:   toPdfSpace(cx + 16, cy + 14, R, w, h),
+      ...tick,
+    });
   }
 
   return Buffer.from(await doc.save());

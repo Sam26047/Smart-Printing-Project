@@ -70,6 +70,11 @@ Build new UI from these tokens/components rather than one-off styles.
   JSON_AGG / ARRAY_AGG instead.
 - JWT logout has no server-side blocklist; mitigation is short expiry + the axios
   401 interceptor. Don't assume tokens can be revoked server-side.
+- The stored upload under job_files.file_path is the FINAL print file, not the
+  original bytes: landscape jobs get pdf-lib /Rotate applied at submission and
+  the pre-rotation upload is not retained. Any future page-count, preview, or
+  reprocessing feature must not assume the stored file matches what the student
+  uploaded byte-for-byte.
 
 
 ## Current focus

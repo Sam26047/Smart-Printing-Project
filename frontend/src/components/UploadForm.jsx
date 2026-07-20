@@ -25,7 +25,11 @@ const PRIORITY_OPTIONS = [
 ];
 
 function UploadForm() {
-  const { addActiveJob } = useAuth(); // ✅ get addActiveJob from context
+  const { addActiveJob, user } = useAuth(); // ✅ get addActiveJob from context
+
+  // Shop choice persists per user (shared lab/library machines are normal on
+  // campus — one global key would leak the previous student's choice)
+  const shopStorageKey = user?.username ? `selectedPrintShop:${user.username}` : null;
 
   const [files, setFiles]               = useState([]);
   const [fileSettings, setFileSettings] = useState([]); // one entry per file (replaces global copies/color/double_sided)
@@ -64,15 +68,28 @@ function UploadForm() {
     }
   };
 
-  // Load shops once; auto-select when there's only one
+  // Load shops once; auto-select when there's only one. With several shops,
+  // rehydrate the user's persisted choice — but only if that shop still
+  // exists in the fetched list; otherwise fall back to the pick-a-shop
+  // prompt (no error). Rehydration sets selectedShopId through the same
+  // state as a manual pick, so the estimate + queue-status effects re-fire
+  // identically.
   useEffect(() => {
     printJobService.getShops()
       .then((res) => {
         const list = res.data.shops || [];
         setShops(list);
-        if (list.length === 1) setSelectedShopId(list[0].id);
+        if (list.length === 1) {
+          setSelectedShopId(list[0].id); // single-shop: selector stays hidden
+        } else if (shopStorageKey) {
+          const saved = localStorage.getItem(shopStorageKey);
+          if (saved && list.some((s) => s.id === saved)) {
+            setSelectedShopId(saved);
+          }
+        }
       })
       .catch(() => { /* non-critical — dropdown just won't populate */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Re-fetch queue status whenever the chosen shop changes (position + Urgent
@@ -252,7 +269,13 @@ function UploadForm() {
             data-tour="shop-select"
             className="form-select"
             value={selectedShopId}
-            onChange={(e) => setSelectedShopId(e.target.value)}
+            onChange={(e) => {
+              setSelectedShopId(e.target.value);
+              // persist explicit picks only (not the single-shop auto-select)
+              if (shopStorageKey && e.target.value) {
+                localStorage.setItem(shopStorageKey, e.target.value);
+              }
+            }}
           >
             <option value="">Select a shop…</option>
             {shops.map((s) => (
