@@ -84,7 +84,7 @@ export const TOUR_UI_STEPS = [
     id: "settings",
     target: "file-card",
     title: "Per-file settings + live estimate",
-    body: "Each file has its own copies / colour / duplex options. The estimate below is computed server-side with the demo shop's per-page rates — change a setting and watch it update (real page counts are confirmed at submission).",
+    body: "Each file gets a print tier (its colour/duplex bundle, priced per page), plus copies, orientation and paper. The estimate below is computed server-side — change a setting and watch it update (real page counts are confirmed at submission).",
     advance: { type: "manual" },
   },
   {

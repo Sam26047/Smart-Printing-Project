@@ -38,18 +38,31 @@ export const listTiers = async (req, res) => {
 
     const result = await pool.query(
       `SELECT t.id, t.name, t.color, t.duplex, t.price_per_page,
-              EXISTS (
-                SELECT 1 FROM printer_tiers pt
-                JOIN printers p ON p.id = pt.printer_id
-                WHERE pt.tier_id = t.id AND p.status = 'ONLINE'
-              ) AS available
+              (SELECT count(*) FROM printer_tiers pt JOIN printers p ON p.id = pt.printer_id
+                 WHERE pt.tier_id = t.id)::int AS assigned_count,
+              (SELECT count(*) FROM printer_tiers pt JOIN printers p ON p.id = pt.printer_id
+                 WHERE pt.tier_id = t.id AND p.status = 'ONLINE')::int AS online_count
        FROM capability_tiers t
        WHERE t.shop_id = $1
        ORDER BY t.color, t.duplex`,
       [shopId]
     );
 
-    let tiers = result.rows;
+    // available = ≥1 assigned printer ONLINE. reason distinguishes the two
+    // unavailable cases WITHOUT leaking any device name/model/status:
+    //   • a printer serves this option but is offline → temporary
+    //   • no printer serves this option at all       → not offered here
+    let tiers = result.rows.map((t) => {
+      const available = t.online_count > 0;
+      const reason = available
+        ? null
+        : t.assigned_count > 0
+          ? "The printer for this option is offline right now — try again shortly."
+          : "This shop doesn't currently offer this option.";
+      // strip internal counts from the response
+      const { assigned_count, online_count, ...rest } = t; // eslint-disable-line no-unused-vars
+      return { ...rest, available, reason };
+    });
     if (adminView) {
       const printers = await pool.query(
         `SELECT pt.tier_id, p.id, p.label, p.status

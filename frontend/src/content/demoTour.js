@@ -29,7 +29,7 @@ export const DEMO_TOUR_STEPS = [
   {
     id: "submit",
     title: "Submit a print job",
-    body: "On the submit job tab, drop any PDF, set per-file options (try one B&W and one colour file — they route to different virtual printers), and submit. The locked total is computed server-side from real page counts.",
+    body: "On the submit job tab, drop any PDF, pick a print tier per file (try one B&W and one colour — they route to different virtual printers), and submit. The locked total is computed server-side from real page counts.",
   },
   {
     id: "pay",

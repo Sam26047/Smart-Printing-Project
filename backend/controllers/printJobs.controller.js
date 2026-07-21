@@ -62,7 +62,7 @@ async function resolveShopId(rawShopId) {
   return { error: "shop_id is required when multiple shops exist" };
 }
 
-// ─── Helper: a shop's capability tiers, indexed for resolution ───────────────
+// ─── Helper: a shop's capability tiers, indexed by id ────────────────────────
 async function getShopTiers(shopId) {
   const result = await pool.query(
     `SELECT id, color, duplex, name, price_per_page
@@ -70,12 +70,8 @@ async function getShopTiers(shopId) {
     [shopId]
   );
   const byId = {};
-  const byCombo = {};
-  for (const t of result.rows) {
-    byId[t.id] = t;
-    byCombo[`${t.color}|${t.duplex}`] = t;
-  }
-  return { list: result.rows, byId, byCombo };
+  for (const t of result.rows) byId[t.id] = t;
+  return { list: result.rows, byId };
 }
 
 // ─── Helper: which of these tiers have ≥1 ONLINE printer assigned ────────────
@@ -91,23 +87,13 @@ async function availableTierIds(tierIds) {
   return new Set(result.rows.map((r) => r.tier_id));
 }
 
-// ─── Helper: resolve one file's tier from its settings entry ─────────────────
-// Accepts EITHER an explicit tier_id OR the legacy color/double_sided flags.
-// ⚠ TEMPORARY DUAL INPUT (E7): the legacy flag path exists ONLY to keep the
-// current frontend and demo tour working until the student-UI prompt ships
-// explicit tier_id. Once it does, this fallback is REMOVED in a hard cutover —
-// same as AGENT_SECRET, no permanent fallback.
+// ─── Helper: resolve one file's tier from its explicit tier_id ───────────────
+// The legacy color/double_sided input path was REMOVED in the E7 hard cutover
+// once the student UI began sending tier_id — no fallback, same as AGENT_SECRET.
 function resolveTier(tiers, s) {
-  if (s?.tier_id) {
-    const tier = tiers.byId[s.tier_id];
-    return tier ? { tier } : { error: "Unknown tier for this shop" };
-  }
-  const color = s?.color === true || s?.color === "true";
-  const duplex = s?.double_sided === true || s?.double_sided === "true";
-  const tier = tiers.byCombo[`${color}|${duplex}`];
-  return tier
-    ? { tier }
-    : { error: `This shop has no ${color ? "colour" : "B&W"} ${duplex ? "duplex" : "single-sided"} tier` };
+  if (!s?.tier_id) return { error: "Each file must specify a print tier" };
+  const tier = tiers.byId[s.tier_id];
+  return tier ? { tier } : { error: "Unknown tier for this shop" };
 }
 
 // ─── Helper: get current QUEUED job count (used for dynamic pricing + peak check) ───
@@ -228,10 +214,9 @@ export const estimatePrintJob = async (req, res) => {
     }
     const shopId = shopResolution.shopId;
 
-    // Tier resolution — dual input (explicit tier_id OR legacy flags, see the
-    // ⚠ TEMPORARY note on resolveTier: legacy path dies in a hard cutover once
-    // the student UI sends tier_id). Estimates stay permissive on
-    // availability — they're a read-only preview; submission enforces it.
+    // Tier resolution by explicit tier_id (legacy flag path removed — E7).
+    // Estimates stay permissive on availability — they're a read-only preview;
+    // submission enforces it.
     const tiers = await getShopTiers(shopId);
     if (tiers.list.length === 0) {
       return res.status(400).json({ error: "Shop pricing not configured" });

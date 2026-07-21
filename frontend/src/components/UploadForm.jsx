@@ -4,13 +4,24 @@ import printJobService from "../services/printJobs";
 import { useAuth } from "../hooks/useAuth";
 import PaymentStep from "./PaymentStep";
 
+// color/duplex are no longer separate controls — they're bundled into the
+// chosen TIER (tier_id). copies/orientation/paper_size are NOT tier dimensions
+// and stay per-file.
 const DEFAULT_FILE_SETTINGS = {
   copies: 1,
-  color: false,
-  double_sided: false,
-  orientation: "portrait",  
-  paper_size: "A4",          
+  tier_id: "",
+  orientation: "portrait",
+  paper_size: "A4",
 };
+
+// Pick a sensible default tier for a newly added file: prefer B&W single-sided
+// if it's available, else the first available tier, else "" (blocks estimate/
+// submit — surfaced legibly, never silent).
+function defaultTierId(tierList) {
+  const avail = tierList.filter((t) => t.available);
+  const bwSingle = avail.find((t) => !t.color && !t.duplex);
+  return (bwSingle || avail[0])?.id || "";
+}
 
 // ─── Pricing ──────────────────────────────────────────────────────────────────
 // ALL pricing math lives on the server (per-shop rates + queue-dependent
@@ -49,6 +60,11 @@ function UploadForm() {
   // required once there are several.
   const [shops, setShops]                   = useState([]);
   const [selectedShopId, setSelectedShopId] = useState("");
+
+  // Capability tiers for the selected shop (catalog + per-file picker). Each:
+  // { id, name, color, duplex, price_per_page, available, reason }
+  const [tiers, setTiers] = useState([]);
+  const tierById = Object.fromEntries(tiers.map((t) => [t.id, t]));
 
   // Server-authoritative live estimate (response of POST /print-jobs/estimate)
   const [estimate, setEstimate]     = useState(null);
@@ -99,14 +115,56 @@ function UploadForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedShopId]);
 
+  const fetchTiers = async (shopId) => {
+    try {
+      const res = await printJobService.getTiers(shopId);
+      setTiers(res.data.tiers || []);
+    } catch {
+      setTiers([]); // non-critical — the form surfaces the no-options state
+    }
+  };
+
+  // Tiers are per-shop: load on shop change and CLEAR each file's tier (a
+  // tier_id from the old shop is invalid here — the backfill effect below
+  // re-defaults once the new shop's tiers arrive).
+  useEffect(() => {
+    if (!selectedShopId) { setTiers([]); return; }
+    fetchTiers(selectedShopId);
+    setFileSettings((prev) => prev.map((s) => ({ ...s, tier_id: "" })));
+  }, [selectedShopId]);
+
+  // Re-fetch availability when the window regains focus, so a student who
+  // tabbed away doesn't submit against a stale snapshot. Selections are kept —
+  // only availability/reason refresh (this never clears tier_id).
+  useEffect(() => {
+    if (!selectedShopId) return;
+    const onFocus = () => fetchTiers(selectedShopId);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [selectedShopId]);
+
+  // Backfill a default tier into any file that has none yet (files dropped
+  // before the shop was chosen, or right after a shop switch).
+  useEffect(() => {
+    if (tiers.length === 0) return;
+    const def = defaultTierId(tiers);
+    if (!def) return;
+    setFileSettings((prev) =>
+      prev.some((s) => !s.tier_id)
+        ? prev.map((s) => (s.tier_id ? s : { ...s, tier_id: def }))
+        : prev
+    );
+  }, [tiers]);
+
   // Live estimate — debounced 400ms after any file-settings/urgency change so
   // the displayed number always comes from the same server pricing path that
   // locks the cost at submission. Previous estimate stays visible while the
   // new one is in flight (no flicker).
   useEffect(() => {
-    // Need files AND a chosen shop — pricing is per-shop, so an estimate
-    // without a shop would be meaningless (and the server would reject it).
-    if (fileSettings.length === 0 || !selectedShopId) {
+    // Need files, a chosen shop, AND a tier on every file — the server rejects
+    // an estimate for a file with no tier, so gate to avoid error spam and let
+    // the "choose a print option" hint show instead.
+    if (fileSettings.length === 0 || !selectedShopId || fileSettings.some((s) => !s.tier_id)) {
       setEstimate(null);
       return;
     }
@@ -128,12 +186,14 @@ function UploadForm() {
     return () => clearTimeout(timer);
   }, [fileSettings, urgencyLevel, selectedShopId]);
 
-  // When user selects files → initialize default settings per file
+  // When user selects files → initialize default settings per file (each gets
+  // the default tier if tiers are already loaded; the backfill effect covers
+  // the case where they aren't yet).
   const handleFilesChange = (e) => {
     const selected = Array.from(e.target.files);
+    const def = defaultTierId(tiers);
     setFiles(selected);
-    // ✅ initialise settings for each file (replaces global inputs)
-    setFileSettings(selected.map(() => ({ ...DEFAULT_FILE_SETTINGS })));
+    setFileSettings(selected.map(() => ({ ...DEFAULT_FILE_SETTINGS, tier_id: def })));
   };
 
   // Drag-and-drop handlers
@@ -142,8 +202,9 @@ function UploadForm() {
     setDragging(false);
     const dropped = Array.from(e.dataTransfer.files).filter(f => f.type === "application/pdf");
     if (dropped.length) {
+      const def = defaultTierId(tiers);
       setFiles(dropped);
-      setFileSettings(dropped.map(() => ({ ...DEFAULT_FILE_SETTINGS })));
+      setFileSettings(dropped.map(() => ({ ...DEFAULT_FILE_SETTINGS, tier_id: def })));
     }
   };
 
@@ -171,6 +232,10 @@ function UploadForm() {
 
   // Server-computed cost (null until the first estimate response arrives)
   const cost = fileSettings.length > 0 ? estimate?.pricing || null : null;
+
+  // Tier-selection legibility helpers
+  const allFilesTiered  = fileSettings.length > 0 && fileSettings.every((s) => s.tier_id);
+  const noTiersAvailable = tiers.length > 0 && !tiers.some((t) => t.available);
 
   // Approximate queue position after submitting with chosen urgency
   function estimatedPosition() {
@@ -203,6 +268,20 @@ function UploadForm() {
     }
     if (!selectedShopId) {
       setError("Please choose a print shop");
+      return;
+    }
+    // Every file needs a tier, and it must be currently available
+    if (fileSettings.some((s) => !s.tier_id)) {
+      setError("Choose a print option for each file");
+      return;
+    }
+    const badFile = fileSettings.findIndex((s) => {
+      const t = tierById[s.tier_id];
+      return t && !t.available;
+    });
+    if (badFile !== -1) {
+      const t = tierById[fileSettings[badFile].tier_id];
+      setError(`"${t.name}" is unavailable right now — pick another option for ${files[badFile]?.name}`);
       return;
     }
 
@@ -306,13 +385,50 @@ function UploadForm() {
         />
         <div className="upload-zone-icon">📁</div>
         <h3>Drop files here or click to upload</h3>
-        <p>Configure copies, colour, and duplex per file</p>
+        <p>Pick a print option, copies, and paper per file</p>
         <div style={{ marginTop: "8px" }}>
           {["PDF", "DOCX", "PNG", "JPG"].map((t) => (
             <span key={t} className="file-type-tag">{t}</span>
           ))}
         </div>
       </div>
+
+      {/* ── 1️⃣½ Tier catalog — what this shop offers + prices ────────────── */}
+      {shopChosen && tiers.length > 0 && (
+        <div className="card card-padded" style={{ marginBottom: "16px" }}>
+          <div className="form-label" style={{ marginBottom: "6px" }}>Print options at this shop</div>
+          {tiers.map((t) => (
+            <div
+              key={t.id}
+              style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                gap: "10px", padding: "8px 0", flexWrap: "wrap",
+                borderTop: "0.5px solid var(--border)",
+                opacity: t.available ? 1 : 0.6,
+              }}
+            >
+              <div style={{ minWidth: "180px" }}>
+                <span style={{ fontWeight: 500, fontSize: "13px" }}>{t.name}</span>
+                {!t.available && t.reason && (
+                  <div className="mono-sm" style={{ color: "var(--rose-dark)", marginTop: "2px" }}>
+                    {t.reason}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: "13px", color: "var(--gray-dark)" }}>
+                  ₹{t.price_per_page}/pg
+                </span>
+                {t.available ? (
+                  <span className="badge badge-ready"><span className="badge-dot" />available</span>
+                ) : (
+                  <span className="badge badge-pending"><span className="badge-dot" />unavailable</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── 2️⃣ Per-file cards (replaces old table) ──────────────────────── */}
       {files.map((file, index) => (
@@ -337,26 +453,30 @@ function UploadForm() {
               <button type="button" className="copies-btn" onClick={() => adjustCopies(index, +1)}>+</button>
             </div>
 
-            {/* Color / B&W */}
+            {/* Print tier — bundles colour × duplex with its price. Replaces
+                the old Colour/B&W + Single/Double selects. Unavailable tiers
+                are disabled (the catalog above explains why); a tier that was
+                selected then went unavailable stays shown but blocks submit. */}
             <select
               className="file-select"
-              value={fileSettings[index]?.color ? "color" : "bw"}
-              onChange={(e) => updateFileSetting(index, "color", e.target.value === "color")}
+              value={fileSettings[index]?.tier_id || ""}
+              onChange={(e) => updateFileSetting(index, "tier_id", e.target.value)}
+              title="Print tier"
             >
-              <option value="bw">B&amp;W</option>
-              <option value="color">Colour</option>
+              {!fileSettings[index]?.tier_id && (
+                <option value="">Choose print option…</option>
+              )}
+              {tiers.map((t) => (
+                <option
+                  key={t.id}
+                  value={t.id}
+                  disabled={!t.available && t.id !== fileSettings[index]?.tier_id}
+                >
+                  {t.name} — ₹{t.price_per_page}/pg{!t.available ? " (unavailable)" : ""}
+                </option>
+              ))}
             </select>
 
-            {/* Single / Double sided — full labels, browser will truncate only if truly no space */}
-            <select
-              className="file-select"
-              value={fileSettings[index]?.double_sided ? "double" : "single"}
-              onChange={(e) => updateFileSetting(index, "double_sided", e.target.value === "double")}
-            >
-              <option value="single">Single sided</option>
-              <option value="double">Double sided</option>
-            </select>
-            {/* After the double_sided <select> */}
             <select
               className="file-select"
               value={fileSettings[index]?.orientation || "portrait"}
@@ -451,6 +571,19 @@ function UploadForm() {
           </div>
         )}
       </div>
+
+      {/* Legible blocked state: files present but no cost yet because a tier
+          is missing/unavailable — never leave the estimate silently absent */}
+      {files.length > 0 && shopChosen && !allFilesTiered && (
+        <div className="deadline-warn" style={{ marginBottom: "20px" }}>
+          <span>{noTiersAvailable ? "🚫" : "ℹ️"}</span>
+          <span>
+            {noTiersAvailable
+              ? "No print options are available at this shop right now — check back shortly or try another shop."
+              : "Choose a print option for each file to see the cost."}
+          </span>
+        </div>
+      )}
 
       {/* ── 4️⃣ Queue transparency + live cost estimate ───────────────────── */}
       {files.length > 0 && cost && (

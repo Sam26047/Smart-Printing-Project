@@ -33,6 +33,13 @@ const getShops = () => {
   return apiClient.get("/shops");
 };
 
+// A shop's capability tiers with per-tier price + availability + reason.
+// Student path: pass shop_id explicitly (response carries NO device detail).
+// Used to render the price catalog and the per-file tier picker.
+const getTiers = (shopId) => {
+  return apiClient.get("/shops/tiers", { params: { shop_id: shopId } });
+};
+
 // Server-authoritative cost preview — same pricing path as submission, creates
 // nothing. Pages assumed 1/file; the real total is locked at createPrintJob.
 const estimateJob = (payload) => {
@@ -53,6 +60,7 @@ export default {
   regenerateOtp,
   getQueueStatus,
   getShops,
+  getTiers,
   estimateJob,
   createPaymentOrder,
 };
