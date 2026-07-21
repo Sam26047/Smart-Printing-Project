@@ -367,3 +367,36 @@ CREATE TABLE IF NOT EXISTS discovered_printers (
   -- upsert key; its index leads with shop_id, serving the admin lookup too
   UNIQUE (shop_id, agent_token_id, device_name)
 );
+-- ─── Phase: Cross-tier reassignment integrity (absorb / cancel-refund) ────────
+
+-- Refund tracking on the job; payment_status gains REFUNDED. (status='CANCELLED'
+-- needs no DDL — print_jobs.status has no CHECK; it's a code-level terminal
+-- state reached only via the cancel-refund path.)
+ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS razorpay_refund_id TEXT;
+ALTER TABLE print_jobs DROP CONSTRAINT IF EXISTS print_jobs_payment_status_check;
+ALTER TABLE print_jobs ADD CONSTRAINT print_jobs_payment_status_check
+  CHECK (payment_status IN ('UNPAID', 'PAID', 'FAILED', 'REFUNDED'));
+
+-- Audit for cross-tier reassignment decisions — answers "why did this job print
+-- at a price nobody paid" (ABSORBED rows) and "why was this refunded"
+-- (CANCELLED_REFUNDED rows) months later. Identities and tier names are
+-- SNAPSHOTTED (denormalized) because admins/tiers can be renamed or deleted;
+-- the row must remain self-explanatory. Written in the SAME transaction as the
+-- state change, so a crash can never leave an absorbed job without its trail.
+CREATE TABLE IF NOT EXISTS job_reassignment_audit (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  job_id          UUID REFERENCES print_jobs(id) ON DELETE SET NULL,
+  file_id         UUID,
+  admin_id        UUID REFERENCES users(id) ON DELETE SET NULL,
+  admin_email     TEXT,                         -- snapshot (survives user delete/rename)
+  from_tier_id    UUID REFERENCES capability_tiers(id) ON DELETE SET NULL,
+  to_tier_id      UUID REFERENCES capability_tiers(id) ON DELETE SET NULL,
+  from_tier_name  TEXT,                          -- snapshot
+  to_tier_name    TEXT,                          -- snapshot
+  amount_paid     NUMERIC(10,2),                 -- what the student paid (job.estimated_cost)
+  recomputed_cost NUMERIC(10,2),                 -- what it costs at the target tier
+  delta           NUMERIC(10,2),                 -- recomputed - paid (shop absorbs / would refund)
+  resolution      TEXT NOT NULL,                 -- 'ABSORBED' | 'CANCELLED_REFUNDED'
+  created_at      TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_reassign_audit_job ON job_reassignment_audit (job_id);

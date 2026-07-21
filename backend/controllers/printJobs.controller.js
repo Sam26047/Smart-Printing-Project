@@ -4,7 +4,8 @@ import path from "path";
 import { PDFDocument, degrees } from "pdf-lib";
 import pool from "../db/pool.js";
 import redisClient from "../redisClient.js";
-import { sendOTPEmail, sendStatusEmail } from "../services/emailService.js";
+import { sendOTPEmail, sendStatusEmail, sendRefundEmail } from "../services/emailService.js";
+import { refundPayment } from "../utils/razorpayClient.js";
 import {
   getUrgencyMultiplier,
   isUrgentDisabled,
@@ -733,101 +734,302 @@ export const regenerateOtp = async (req, res) => {
   }
 };
 
-// ─── POST /print-jobs/:id/reassign-file — same-tier device pinning ───────────
-// Under capability tiers the price is locked to the TIER and can never change
-// with device choice, so the old cross-tier reassign (which re-priced a paid
-// job) is GONE. This endpoint now pins one file of a WAITING_FOR_PRINTER job
-// to a specific ONLINE printer WITHIN the file's tier — no price change, no
-// confirm step (the server never returns confirm_required anymore; the old
-// price-confirm UI in AdminJobRow is dead code for the admin prompt to
-// remove). Recovery when a whole tier's hardware is down: assign another
-// capable printer to the tier (validated endpoint), which auto-requeues.
+// Recompute a job's total with ONE file moved to a different tier — reusing
+// the same pricing path and the job's STORED urgency_multiplier + real page
+// counts, so the delta reflects only the tier swap.
+async function recomputeJobCost(client, jobId, fileId, targetTierPrice, multiplier) {
+  const filesRes = await client.query(
+    `SELECT f.id, f.copies, f.page_count, t.price_per_page
+     FROM job_files f LEFT JOIN capability_tiers t ON t.id = f.tier_id
+     WHERE f.job_id = $1`,
+    [jobId]
+  );
+  const settings = filesRes.rows.map((f) => ({
+    copies: f.copies,
+    page_count: f.page_count,
+    rate: f.id === fileId ? Number(targetTierPrice) : Number(f.price_per_page || 0),
+  }));
+  return calculateJobCost(settings, Number(multiplier) || 1).grandTotal;
+}
+
+// ─── POST /print-jobs/:id/reassign-file — tier-level reassignment ─────────────
+// Move one file of a WAITING_FOR_PRINTER job to a target TIER (dispatch picks
+// the device — under tiers every online printer in a tier is equivalent).
+//
+//   • same tier (or a different tier at the SAME price → delta 0): FREE path —
+//     requeue + dispatch, no price change, no audit, no notification.
+//   • different tier, delta > 0: the shop would owe more. Requires an explicit
+//     resolution — 'absorb' (shop eats it, job proceeds at the paid price, no
+//     student email) or 'cancel_refund'. Absorb writes an audit row.
+//   • different tier, delta < 0: target costs LESS than was paid. Absorb is
+//     REJECTED (that would be the shop keeping money for a service it's not
+//     providing); the only resolution offered is 'cancel_refund'. Partial
+//     refund of the difference is the eventual right answer — see CLAUDE.md
+//     "known gap".
+//
+// Reassignment is WAITING_FOR_PRINTER-only BY DESIGN: a PRINTING job is already
+// bound and may have produced output, so its tier can't be changed (the error
+// says exactly that). The cancel-refund path is idempotent via a row lock +
+// state guard: an already-REFUNDED job returns its existing refund id without
+// calling Razorpay again. Audit rows are written in the SAME transaction as the
+// state change.
 export const reassignFile = async (req, res) => {
   const { id: jobId } = req.params;
-  const { file_id, printer_id } = req.body || {};
+  const { file_id, target_tier_id, resolution } = req.body || {};
 
-  if (!file_id || !printer_id || !UUID_RE.test(file_id) || !UUID_RE.test(printer_id)) {
-    return res.status(400).json({ error: "file_id and printer_id (UUIDs) are required" });
+  if (!file_id || !target_tier_id || !UUID_RE.test(file_id) || !UUID_RE.test(target_tier_id)) {
+    return res.status(400).json({ error: "file_id and target_tier_id (UUIDs) are required" });
+  }
+  if (resolution && !["absorb", "cancel_refund"].includes(resolution)) {
+    return res.status(400).json({ error: "resolution must be 'absorb' or 'cancel_refund'" });
   }
 
+  const client = await pool.connect();
+  try {
+    const adminRes = await client.query(
+      `SELECT shop_id, email FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    const adminShopId = adminRes.rows[0]?.shop_id;
+    const adminEmail = adminRes.rows[0]?.email;
+    if (!adminShopId) {
+      return res.status(403).json({ error: "Admin is not assigned to a shop" });
+    }
+
+    await client.query("BEGIN");
+
+    // Lock the job row for the whole decision — serializes concurrent
+    // reassign/refund attempts (the money-safety guarantee).
+    const jobRes = await client.query(
+      `SELECT j.id, j.status, j.payment_status, j.estimated_cost, j.urgency_multiplier,
+              j.razorpay_payment_id, j.razorpay_refund_id, j.user_id, u.email AS student_email
+       FROM print_jobs j JOIN users u ON u.id = j.user_id
+       WHERE j.id = $1 AND j.shop_id = $2 FOR UPDATE OF j`,
+      [jobId, adminShopId]
+    );
+    if (jobRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Job not found" });
+    }
+    const job = jobRes.rows[0];
+
+    // Idempotency: a job already cancelled+refunded returns its existing refund
+    // id — no second Razorpay call, whatever fired the retry.
+    if (job.status === "CANCELLED" || job.payment_status === "REFUNDED") {
+      await client.query("ROLLBACK");
+      return res.json({
+        message: "Job was already cancelled and refunded",
+        job_id: jobId,
+        job_status: "CANCELLED",
+        razorpay_refund_id: job.razorpay_refund_id,
+        already_done: true,
+      });
+    }
+
+    // Reassignment is only for parked jobs — say WHY when it isn't.
+    if (job.status !== "WAITING_FOR_PRINTER") {
+      await client.query("ROLLBACK");
+      const why =
+        job.status === "PRINTING"
+          ? "the job is PRINTING — it's already bound to a printer and may have started or finished printing, so its tier can't be changed"
+          : `the job is ${job.status}`;
+      return res.status(400).json({ error: `Only WAITING_FOR_PRINTER jobs can be reassigned — ${why}` });
+    }
+
+    // File + its current tier
+    const fileRes = await client.query(
+      `SELECT f.id, f.tier_id, f.paper_size, t.name AS tier_name
+       FROM job_files f LEFT JOIN capability_tiers t ON t.id = f.tier_id
+       WHERE f.id = $1 AND f.job_id = $2`,
+      [file_id, jobId]
+    );
+    if (fileRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "File not found on this job" });
+    }
+    const file = fileRes.rows[0];
+
+    // Target tier must be in this shop AND have ≥1 ONLINE printer that can take
+    // this file's paper size.
+    const tierRes = await client.query(
+      `SELECT t.id, t.name, t.color, t.duplex, t.price_per_page,
+              EXISTS (
+                SELECT 1 FROM printer_tiers pt JOIN printers p ON p.id = pt.printer_id
+                WHERE pt.tier_id = t.id AND p.status = 'ONLINE'
+                  AND $3 = ANY(p.paper_sizes)
+              ) AS routable
+       FROM capability_tiers t WHERE t.id = $1 AND t.shop_id = $2`,
+      [target_tier_id, adminShopId, file.paper_size]
+    );
+    if (tierRes.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Target tier not found" });
+    }
+    const target = tierRes.rows[0];
+    if (!target.routable) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: `'${target.name}' has no online printer for ${file.paper_size} — can't reassign there` });
+    }
+
+    const sameTier = target.id === file.tier_id;
+    const recomputed = await recomputeJobCost(
+      client, jobId, file_id, target.price_per_page, job.urgency_multiplier
+    );
+    const paid = Number(job.estimated_cost);
+    const delta = Math.round((recomputed - paid) * 100) / 100;
+
+    // Helper: apply the move (tier + derived flags), clear device pin, requeue.
+    const applyMove = async () => {
+      await client.query(
+        `UPDATE job_files SET tier_id = $1, color = $2, double_sided = $3, printer_id = NULL
+         WHERE id = $4`,
+        [target.id, target.color, target.duplex, file_id]
+      );
+      await client.query(
+        `UPDATE print_jobs SET status = 'QUEUED'
+         WHERE id = $1 AND status = 'WAITING_FOR_PRINTER'`,
+        [jobId]
+      );
+    };
+    const writeAudit = async (res_kind) => {
+      await client.query(
+        `INSERT INTO job_reassignment_audit
+           (job_id, file_id, admin_id, admin_email, from_tier_id, to_tier_id,
+            from_tier_name, to_tier_name, amount_paid, recomputed_cost, delta, resolution)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [jobId, file_id, req.user.id, adminEmail, file.tier_id, target.id,
+         file.tier_name, target.name, paid, recomputed, delta, res_kind]
+      );
+    };
+
+    // ── FREE path: same tier, or different tier at the same price (delta 0) ──
+    if (sameTier || delta === 0) {
+      await applyMove();
+      await client.query("COMMIT");
+      const dispatch = await attemptDispatch(jobId);
+      return res.json({
+        message: sameTier ? "File reassigned within its tier" : "File reassigned (same price — no charge change)",
+        job_id: jobId, file_id, to_tier: target.name, delta: 0,
+        dispatched: dispatch.dispatched,
+        job_status: dispatch.dispatched ? "PRINTING" : "WAITING_FOR_PRINTER",
+      });
+    }
+
+    // ── Cross-tier with a price difference → explicit decision required ──
+    if (!resolution) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        decision_required: true,
+        from_tier: file.tier_name,
+        to_tier: target.name,
+        current_paid: paid,
+        recomputed_cost: recomputed,
+        delta,
+        allowed_resolutions: delta > 0 ? ["absorb", "cancel_refund"] : ["cancel_refund"],
+        message:
+          delta > 0
+            ? `'${target.name}' costs ₹${delta} more than the student paid. Absorb the difference (shop pays), or cancel and refund ₹${paid}.`
+            : `'${target.name}' costs ₹${Math.abs(delta)} less than the student paid — the job can only be cancelled and refunded (₹${paid}). Partial refund of the difference isn't supported.`,
+      });
+    }
+
+    if (resolution === "absorb") {
+      if (delta <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Absorb only covers a shortfall (the target must cost MORE). This tier costs the same or less — use cancel & refund.",
+        });
+      }
+      await applyMove(); // estimated_cost intentionally UNCHANGED — student paid it
+      await writeAudit("ABSORBED");
+      await client.query("COMMIT");
+      const dispatch = await attemptDispatch(jobId);
+      return res.json({
+        message: `Difference absorbed (shop pays ₹${delta})`,
+        job_id: jobId, file_id, to_tier: target.name, delta,
+        dispatched: dispatch.dispatched,
+        job_status: dispatch.dispatched ? "PRINTING" : "WAITING_FOR_PRINTER",
+      });
+    }
+
+    // resolution === "cancel_refund"
+    if (job.payment_status !== "PAID") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: `Job isn't paid (payment_status ${job.payment_status}) — nothing to refund` });
+    }
+    if (!job.razorpay_payment_id) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "No payment on file to refund" });
+    }
+
+    // Real Razorpay refund happens INSIDE the locked transaction so a crash
+    // after refund but before COMMIT rolls back the state (Razorpay's own
+    // ledger is the backstop) and a retry re-refunds only if state didn't
+    // persist. On any API error we roll back and change nothing.
+    let refund;
+    try {
+      refund = await refundPayment(job.razorpay_payment_id, Math.round(paid * 100));
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error("REFUND API ERROR:", err?.error?.description || err.message);
+      return res.status(502).json({ error: "Refund failed at the payment provider — nothing was changed. Try again." });
+    }
+
+    await client.query(
+      `UPDATE print_jobs
+       SET payment_status = 'REFUNDED', status = 'CANCELLED', razorpay_refund_id = $2
+       WHERE id = $1 AND status = 'WAITING_FOR_PRINTER'`,
+      [jobId, refund.id]
+    );
+    await writeAudit("CANCELLED_REFUNDED");
+    await client.query("COMMIT");
+
+    // After-commit side effects (non-fatal, like the rest of the app)
+    redisClient.sRem(`user:${job.user_id}:activeJobs`, jobId).catch(() => {});
+    if (job.student_email) {
+      sendRefundEmail(job.student_email, jobId, paid).catch((e) =>
+        console.error("REFUND EMAIL ERROR:", e.message)
+      );
+    }
+
+    return res.json({
+      message: `Job cancelled and ₹${paid} refunded`,
+      job_id: jobId, job_status: "CANCELLED",
+      payment_status: "REFUNDED", razorpay_refund_id: refund.id,
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch { /* already rolled back */ }
+    console.error("REASSIGN FILE ERROR:", err.message);
+    res.status(500).json({ error: "Failed to reassign file" });
+  } finally {
+    client.release();
+  }
+};
+
+// ─── GET /print-jobs/reassignment-audit — admin, own shop ────────────────────
+// Answers "why did this job print at a price nobody paid" without psql.
+export const getReassignmentAudit = async (req, res) => {
   try {
     const adminShopId = await getAdminShopId(req.user.id);
     if (!adminShopId) {
       return res.status(403).json({ error: "Admin is not assigned to a shop" });
     }
-
-    // Job must be in this admin's shop and actually blocked
-    const jobRes = await pool.query(
-      `SELECT id, status FROM print_jobs WHERE id = $1 AND shop_id = $2`,
-      [jobId, adminShopId]
+    // Scope to this shop's jobs (join on the audited job; snapshot fields carry
+    // the rest even if tiers/admins were later renamed or deleted).
+    const result = await pool.query(
+      `SELECT a.id, a.job_id, a.admin_email, a.from_tier_name, a.to_tier_name,
+              a.amount_paid, a.recomputed_cost, a.delta, a.resolution, a.created_at
+       FROM job_reassignment_audit a
+       JOIN print_jobs j ON j.id = a.job_id
+       WHERE j.shop_id = $1
+       ORDER BY a.created_at DESC
+       LIMIT 200`,
+      [adminShopId]
     );
-    if (jobRes.rows.length === 0) {
-      return res.status(404).json({ error: "Job not found" });
-    }
-    if (jobRes.rows[0].status !== "WAITING_FOR_PRINTER") {
-      return res.status(400).json({
-        error: `Only WAITING_FOR_PRINTER jobs can be reassigned (job is ${jobRes.rows[0].status})`,
-      });
-    }
-
-    // File must belong to the job and carry a tier
-    const fileRes = await pool.query(
-      `SELECT id, tier_id, paper_size FROM job_files WHERE id = $1 AND job_id = $2`,
-      [file_id, jobId]
-    );
-    if (fileRes.rows.length === 0) {
-      return res.status(404).json({ error: "File not found on this job" });
-    }
-    const file = fileRes.rows[0];
-    if (!file.tier_id) {
-      return res.status(400).json({ error: "File has no tier (tier was deleted) — reassign the tier's printers instead" });
-    }
-
-    // Target printer: same shop, ONLINE, assigned to the FILE'S TIER, paper ok
-    const printerRes = await pool.query(
-      `SELECT p.id, p.label, p.status, p.paper_sizes,
-              EXISTS (SELECT 1 FROM printer_tiers pt
-                      WHERE pt.printer_id = p.id AND pt.tier_id = $3) AS in_tier
-       FROM printers p WHERE p.id = $1 AND p.shop_id = $2`,
-      [printer_id, adminShopId, file.tier_id]
-    );
-    if (printerRes.rows.length === 0) {
-      return res.status(404).json({ error: "Printer not found" });
-    }
-    const printer = printerRes.rows[0];
-    if (!printer.in_tier) {
-      return res.status(400).json({
-        error: "Printer is not assigned to this file's tier — assign it to the tier first",
-      });
-    }
-    if (printer.status !== "ONLINE") {
-      return res.status(400).json({ error: `Printer is ${printer.status}, not ONLINE` });
-    }
-    if (!printer.paper_sizes.includes(file.paper_size)) {
-      return res.status(400).json({ error: `Printer does not support ${file.paper_size}` });
-    }
-
-    // Pin, requeue, re-attempt dispatch. estimated_cost is untouched — that's
-    // the whole point of tiers.
-    await pool.query(`UPDATE job_files SET printer_id = $1 WHERE id = $2`, [printer_id, file_id]);
-    await pool.query(
-      `UPDATE print_jobs SET status = 'QUEUED'
-       WHERE id = $1 AND status = 'WAITING_FOR_PRINTER'`,
-      [jobId]
-    );
-    const dispatch = await attemptDispatch(jobId);
-
-    res.json({
-      message: "File pinned within its tier",
-      job_id: jobId,
-      file_id,
-      pinned_printer: printer.label,
-      dispatched: dispatch.dispatched,
-      job_status: dispatch.dispatched ? "PRINTING" : "WAITING_FOR_PRINTER",
-    });
+    res.json({ audit: result.rows });
   } catch (err) {
-    console.error("REASSIGN FILE ERROR:", err.message);
-    res.status(500).json({ error: "Failed to reassign file" });
+    console.error("REASSIGN AUDIT ERROR:", err.message);
+    res.status(500).json({ error: "Failed to fetch reassignment audit" });
   }
 };
 

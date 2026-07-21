@@ -45,6 +45,10 @@ router.get("/queue/status", printJobsController.getQueueStatus);
 // nothing. Used by the live estimate on the submit form.
 router.post("/estimate", authenticate, printJobsController.estimatePrintJob);
 
+// Cross-tier reassignment audit (admin, own shop). BEFORE /:id so the literal
+// path isn't captured as a job id.
+router.get("/reassignment-audit", authenticate, requireAdmin, printJobsController.getReassignmentAudit);
+
 // ─── Payments (Razorpay, test mode) ──────────────────────────────────────────
 // Webhook has NO JWT — Razorpay calls it; the HMAC signature is the auth.
 // Registered before the /:id/* routes for clarity.
@@ -79,8 +83,8 @@ router.post(
   authenticate,
   printJobsController.regenerateOtp
 );
-// Shopkeeper override: pin one file of a WAITING_FOR_PRINTER job to a printer
-// of a different color tier (recomputes + re-locks the price; needs confirm)
+// Tier-level reassignment of a WAITING_FOR_PRINTER file: free within-tier /
+// same-price; cross-tier needs an explicit absorb or cancel-refund resolution
 router.post(
   "/:id/reassign-file",
   authenticate,

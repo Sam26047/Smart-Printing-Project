@@ -53,7 +53,20 @@ There is no automated test runner anywhere in this repo currently — verify cha
   never from whichever printer gets picked. Routing selects any ONLINE printer
   ASSIGNED to the file's tier (printer_tiers, hardware-validated at assignment
   time); device choice must never change output or cost. Don't reintroduce
-  per-printer pricing or cross-tier reassignment.
+  per-printer pricing.
+- Cross-tier reassignment (reassign-file) is deliberate, not silent: same-tier
+  or same-price moves are free; a costlier target requires 'absorb' (shop eats
+  the delta, estimated_cost unchanged — the student paid it) or 'cancel_refund';
+  a cheaper target only allows 'cancel_refund' (absorb on a negative delta =
+  shop keeping money for a lesser service, so it's rejected). Every absorb/cancel
+  writes a job_reassignment_audit row (admin + tier-name snapshots + delta) in
+  the SAME transaction as the state change. Cancel-refund is idempotent via a
+  FOR UPDATE lock: an already-REFUNDED job returns its refund id, no second
+  Razorpay call. Terminal states from this path: status='CANCELLED',
+  payment_status='REFUNDED'. KNOWN GAP: partial refund of the difference on a
+  negative-delta reassign is not implemented — the only option there is a full
+  cancel+refund. WAITING_FOR_PRINTER-only by design (a PRINTING job may have
+  already produced output).
 - The print agent is never part of the Docker stack and never deployed to the VPS.
 
 ## Frontend styling

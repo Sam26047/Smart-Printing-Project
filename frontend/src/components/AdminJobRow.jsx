@@ -43,46 +43,49 @@ function UrgencyBadge({ level }) {
   );
 }
 
-export default function AdminJobRow({ job, printers = [], onUpdate }) {
+export default function AdminJobRow({ job, tiers = [], onUpdate }) {
   const [loading, setLoading]   = useState(false);
   const [priority, setPriority] = useState(job.priority ?? 0);
 
-  // Reassign flow state (WAITING_FOR_PRINTER jobs only)
+  // Reassign flow state (WAITING_FOR_PRINTER jobs only). Reassignment is now
+  // TIER-level: pick a target tier; same tier / same price is free, a costlier
+  // tier needs absorb-or-cancel, a cheaper tier only cancel+refund.
   const [showReassign, setShowReassign]   = useState(false);
-  const [selection, setSelection]         = useState({});   // file_id → printer_id
-  const [pendingConfirm, setPendingConfirm] = useState(null); // { fileId, printerId, currentCost, newCost }
+  const [selection, setSelection]         = useState({});   // file_id → target_tier_id
+  const [decision, setDecision]           = useState(null); // server decision_required payload + { fileId, targetTierId }
+  const [submitting, setSubmitting]       = useState(false); // disables buttons in flight (double-fire guard)
   const [reassignError, setReassignError] = useState(null);
 
   const nextStatus = NEXT_STATUS[job.status];
   const canAdvance = !!nextStatus;
   const isBlocked  = job.status === "WAITING_FOR_PRINTER";
 
-  const onlinePrinters = printers.filter((p) => p.status === "ONLINE");
+  // A file's current tier is derived from its colour/duplex (tiers carry those)
+  const currentTierOf = (f) =>
+    tiers.find((t) => t.color === f.color && t.duplex === f.double_sided) || null;
 
-  // First call WITHOUT confirm — the server answers 400 with the old/new
-  // price, which we surface as an inline confirm strip. Second call sends
-  // confirm: true and reports the dispatch outcome.
-  const handleReassign = async (fileId, printerId, confirmed) => {
+  // First call has NO resolution. Free path (same tier / delta 0) → succeeds.
+  // A priced cross-tier move → 400 { decision_required } which we surface; the
+  // admin then re-calls with 'absorb' or 'cancel_refund'. submitting disables
+  // the buttons in flight so a double-click can't double-fire (esp. a refund).
+  const handleReassign = async (fileId, targetTierId, resolution) => {
     setReassignError(null);
+    setSubmitting(true);
     try {
-      await adminJobs.reassignFile(job.id, fileId, printerId, confirmed);
-      // confirmed call succeeded → job re-queued/dispatched
-      setPendingConfirm(null);
+      await adminJobs.reassignFile(job.id, fileId, targetTierId, resolution);
+      setDecision(null);
       setShowReassign(false);
       onUpdate();
     } catch (err) {
       const data = err.response?.data;
-      if (data?.confirm_required) {
-        setPendingConfirm({
-          fileId,
-          printerId,
-          currentCost: data.current_estimated_cost,
-          newCost: data.new_estimated_cost,
-        });
+      if (data?.decision_required) {
+        setDecision({ fileId, targetTierId, ...data });
       } else {
         setReassignError(data?.error || "Reassign failed");
-        setPendingConfirm(null);
+        setDecision(null);
       }
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -172,7 +175,7 @@ export default function AdminJobRow({ job, printers = [], onUpdate }) {
           <button
             className="btn btn-ghost btn-sm"
             style={{ marginLeft: 4 }}
-            onClick={() => { setShowReassign((v) => !v); setReassignError(null); setPendingConfirm(null); }}
+            onClick={() => { setShowReassign((v) => !v); setReassignError(null); setDecision(null); }}
           >
             {showReassign ? "close" : "reassign"}
           </button>
@@ -185,62 +188,76 @@ export default function AdminJobRow({ job, printers = [], onUpdate }) {
       <tr>
         <td colSpan={6} style={{ background: "var(--paper2)", padding: "10px 14px" }}>
           <div className="mono-sm" style={{ color: "var(--gray-dark)", marginBottom: 8 }}>
-            no eligible printer for ≥1 file — pin a file to another printer
-            (different tier changes the price and asks to confirm)
+            no online printer for this job's tier — move a file to another tier.
+            same tier / same price is free; a costlier tier lets you absorb the
+            difference or cancel &amp; refund; a cheaper tier can only be refunded.
           </div>
 
-          {(job.files || []).map((f) => (
-            <div
-              key={f.file_id}
-              className="mono-sm"
-              style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}
-            >
-              <span style={{ minWidth: 180 }}>
-                {f.file_name} · {f.color ? "Color" : "B&W"} · {f.paper_size}
-              </span>
-              <span style={{ color: "var(--gray)" }}>
-                {f.printer_label ? `pinned: ${f.printer_label}` : "unrouted"}
-              </span>
-              <select
-                className="file-select"
-                value={selection[f.file_id] || ""}
-                onChange={(e) => setSelection((s) => ({ ...s, [f.file_id]: e.target.value }))}
-              >
-                <option value="">choose printer…</option>
-                {onlinePrinters.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label} ({p.supports_color ? "colour" : "b&w"})
-                  </option>
-                ))}
-              </select>
-              <button
-                className="btn btn-ghost btn-sm"
-                disabled={!selection[f.file_id]}
-                onClick={() => handleReassign(f.file_id, selection[f.file_id], false)}
-              >
-                reassign →
-              </button>
-            </div>
-          ))}
+          {(job.files || []).map((f) => {
+            const cur = currentTierOf(f);
+            const isDeciding = decision && decision.fileId === f.file_id;
+            return (
+              <div key={f.file_id} style={{ marginBottom: 8 }}>
+                <div className="mono-sm" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <span style={{ minWidth: 180 }}>
+                    {f.file_name} · {f.paper_size}
+                  </span>
+                  <span style={{ color: "var(--gray)" }}>
+                    now: {cur ? `${cur.name} · ₹${cur.price_per_page}/pg` : `${f.color ? "Colour" : "B&W"} ${f.double_sided ? "duplex" : "single"}`}
+                  </span>
+                  <select
+                    className="file-select"
+                    value={selection[f.file_id] || ""}
+                    onChange={(e) => { setSelection((s) => ({ ...s, [f.file_id]: e.target.value })); setDecision(null); }}
+                  >
+                    <option value="">move to tier…</option>
+                    {tiers.map((t) => (
+                      <option key={t.id} value={t.id} disabled={!t.available}>
+                        {t.name} — ₹{t.price_per_page}/pg{t.available ? "" : " (unavailable)"}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={!selection[f.file_id] || submitting}
+                    onClick={() => handleReassign(f.file_id, selection[f.file_id], undefined)}
+                  >
+                    reassign →
+                  </button>
+                </div>
 
-          {/* Price-change confirmation strip (server-quoted numbers) */}
-          {pendingConfirm && (
-            <div className="deadline-warn" style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span>⚠️</span>
-              <span>
-                this changes the job total to <strong>₹{pendingConfirm.newCost}</strong> (was ₹{pendingConfirm.currentCost}) — proceed?
-              </span>
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() => handleReassign(pendingConfirm.fileId, pendingConfirm.printerId, true)}
-              >
-                confirm ₹{pendingConfirm.newCost}
-              </button>
-              <button className="btn btn-outline btn-sm" onClick={() => setPendingConfirm(null)}>
-                cancel
-              </button>
-            </div>
-          )}
+                {/* Decision strip — explicit absorb / cancel, per allowed_resolutions */}
+                {isDeciding && (
+                  <div className="deadline-warn" style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span>{decision.delta > 0 ? "⚠️" : "↩️"}</span>
+                    <span>
+                      {decision.from_tier} → <strong>{decision.to_tier}</strong> · student paid ₹{decision.current_paid},
+                      this now costs ₹{decision.recomputed_cost} (Δ ₹{decision.delta}). {decision.message}
+                    </span>
+                    {decision.allowed_resolutions.includes("absorb") && (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={submitting}
+                        onClick={() => handleReassign(decision.fileId, decision.targetTierId, "absorb")}
+                      >
+                        {submitting ? "…" : `absorb — shop pays ₹${decision.delta}`}
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-dark btn-sm"
+                      disabled={submitting}
+                      onClick={() => handleReassign(decision.fileId, decision.targetTierId, "cancel_refund")}
+                    >
+                      {submitting ? "…" : `cancel & refund ₹${decision.current_paid}`}
+                    </button>
+                    <button className="btn btn-outline btn-sm" disabled={submitting} onClick={() => setDecision(null)}>
+                      back
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {reassignError && <div className="alert alert-error">{reassignError}</div>}
         </td>

@@ -15,15 +15,19 @@ const updateStatus = (id, status) => {
   return apiClient.patch(`/print-jobs/${id}/status`, { status });
 };
 
-// Shopkeeper override for WAITING_FOR_PRINTER jobs: pin one file to a printer
-// of a different tier. Called first WITHOUT confirm — the 400 response carries
-// current/new price for the confirm dialog — then again with confirm: true.
-const reassignFile = (id, file_id, printer_id, confirm = false) => {
-  return apiClient.post(`/print-jobs/${id}/reassign-file`, {
-    file_id,
-    printer_id,
-    confirm,
-  });
+// Reassign one file of a WAITING_FOR_PRINTER job to a target TIER. Same tier /
+// same price → free. Cross-tier with a price difference → the first call
+// (no resolution) returns a 400 { decision_required, delta, ... }; call again
+// with resolution 'absorb' (delta>0 only) or 'cancel_refund'.
+const reassignFile = (id, file_id, target_tier_id, resolution) => {
+  const body = { file_id, target_tier_id };
+  if (resolution) body.resolution = resolution;
+  return apiClient.post(`/print-jobs/${id}/reassign-file`, body);
+};
+
+// Cross-tier reassignment audit for the admin's shop
+const getReassignmentAudit = () => {
+  return apiClient.get("/print-jobs/reassignment-audit");
 };
 
 export default {
@@ -31,4 +35,5 @@ export default {
   updatePriority,
   updateStatus,
   reassignFile,
+  getReassignmentAudit,
 };

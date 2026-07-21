@@ -58,3 +58,23 @@ export const sendStatusEmail = async (toEmail, jobId, newStatus) => {
     `,
   });
 };
+
+// Refund notification — the shop cancelled a paid job and returned the money.
+// Sent ONLY on the cancel-and-refund path (money is moving back to the student,
+// so they must be told); the absorb path sends nothing (nothing is asked of
+// them and they still get their print).
+export const sendRefundEmail = async (toEmail, jobId, amount) => {
+  await transporter.sendMail({
+    from: `"Print Shop" <${config.email.from}>`,
+    to: toEmail,
+    subject: "Your print job was cancelled and refunded",
+    text: `Your print job (${jobId.slice(0, 8)}...) has been cancelled by the shop and ₹${amount} has been refunded to your original payment method. Refunds usually take 5–7 working days to appear.`,
+    html: `
+      <h2>Print job cancelled — refund issued</h2>
+      <p>Job ID: <code>${jobId.slice(0, 8)}...</code></p>
+      <p>The shop was unable to complete this job, so it has been cancelled and
+         <strong>₹${amount}</strong> refunded to your original payment method.</p>
+      <p>Refunds usually take 5–7 working days to appear.</p>
+    `,
+  });
+};

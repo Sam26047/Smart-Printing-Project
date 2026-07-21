@@ -5,11 +5,16 @@
 // and submits.
 import { useEffect, useState } from "react";
 import printersService from "../services/printers";
-import shopPricingService from "../services/shopPricing";
+import tiersService from "../services/tiers";
 import AgentTokensPanel from "./AgentTokensPanel";
 
 const PAPER_SIZES = ["A4", "Letter", "A3"];
 const STATUS_OPTIONS = ["ONLINE", "OFFLINE", "OUT_OF_SERVICE"];
+
+// A printer may be assigned to a tier only if its hardware can produce it
+// (server enforces the same rule; this just filters the assign dropdown).
+const capabilityOk = (tier, p) =>
+  (!tier.color || p.supports_color) && (!tier.duplex || p.supports_duplex);
 
 const EMPTY_PRINTER = {
   label: "",
@@ -223,11 +228,12 @@ export default function AdminShop() {
   const [discovered, setDiscovered]       = useState([]);
   const [staleAfterMin, setStaleAfterMin] = useState(30);
 
-  // Pricing form state (strings so the inputs stay controlled while typing)
-  const [pricing, setPricing]           = useState({ bw: "", color: "", discount: "" });
-  const [pricingSaving, setPricingSaving] = useState(false);
-  const [pricingError, setPricingError]   = useState(null);
-  const [pricingSaved, setPricingSaved]   = useState(false);
+  // Capability tiers: price editing + printer assignment + live availability.
+  // priceDrafts holds the in-progress price input per tier (strings).
+  const [tiers, setTiers]           = useState([]);
+  const [priceDrafts, setPriceDrafts] = useState({});
+  const [tierNotice, setTierNotice] = useState(null);
+  const [tierError, setTierError]   = useState(null);
 
   const fetchPrinters = () => {
     printersService.listPrinters()
@@ -244,22 +250,19 @@ export default function AdminShop() {
       .catch(() => { /* non-critical — the form falls back to manual entry */ });
   };
 
-  const fetchPricing = () => {
-    shopPricingService.getPricing()
+  const fetchTiers = () => {
+    tiersService.getAdminTiers()
       .then((res) => {
-        const p = res.data.pricing;
-        setPricing({
-          bw: p.bw_price_per_page,
-          color: p.color_price_per_page,
-          discount: p.duplex_discount_pct,
-        });
+        const list = res.data.tiers || [];
+        setTiers(list);
+        setPriceDrafts(Object.fromEntries(list.map((t) => [t.id, String(t.price_per_page)])));
       })
-      .catch(() => { /* 404 = not configured yet — form starts blank */ });
+      .catch(() => { /* non-critical — panel just won't populate */ });
   };
 
   useEffect(() => {
     fetchPrinters();
-    fetchPricing();
+    fetchTiers();
     fetchDiscovered();
   }, []);
 
@@ -315,38 +318,43 @@ export default function AdminShop() {
     }
   };
 
-  // ── pricing actions ──────────────────────────────────────────────────────
-  const handleSavePricing = async () => {
-    setPricingError(null);
-    setPricingSaved(false);
-
-    const bw = Number(pricing.bw);
-    const color = Number(pricing.color);
-    const discount = Number(pricing.discount || 0);
-
-    // Client-side range checks only — the server re-validates and is authority
-    if (!Number.isFinite(bw) || bw < 0 || !Number.isFinite(color) || color < 0) {
-      setPricingError("Rates must be numbers ≥ 0");
+  // ── tier actions ─────────────────────────────────────────────────────────
+  const handleSaveTierPrice = async (t) => {
+    setTierError(null); setTierNotice(null);
+    const price = Number(priceDrafts[t.id]);
+    if (!Number.isFinite(price) || price < 0) {
+      setTierError("Price must be a number ≥ 0");
       return;
     }
-    if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
-      setPricingError("Duplex discount must be between 0 and 100");
-      return;
-    }
-
-    setPricingSaving(true);
     try {
-      await shopPricingService.putPricing({
-        bw_price_per_page: bw,
-        color_price_per_page: color,
-        duplex_discount_pct: discount,
-      });
-      setPricingSaved(true);
-      fetchPricing();
+      await tiersService.updateTier(t.id, { price_per_page: price });
+      setTierNotice(`${t.name} price updated — applies to new jobs only`);
+      fetchTiers();
     } catch (err) {
-      setPricingError(err.response?.data?.error || "Failed to save pricing");
-    } finally {
-      setPricingSaving(false);
+      setTierError(err.response?.data?.error || "Failed to update price");
+    }
+  };
+
+  const handleAssign = async (printerId, tierId) => {
+    setTierError(null); setTierNotice(null);
+    try {
+      const res = await tiersService.assignPrinter(printerId, tierId);
+      const rq = res.data.requeued_jobs;
+      setTierNotice(res.data.message + (rq > 0 ? ` — ${rq} blocked job${rq > 1 ? "s" : ""} re-queued` : ""));
+      fetchTiers();
+      fetchPrinters();
+    } catch (err) {
+      setTierError(err.response?.data?.error || "Failed to assign printer");
+    }
+  };
+
+  const handleUnassign = async (printerId, tierId) => {
+    setTierError(null); setTierNotice(null);
+    try {
+      await tiersService.unassignPrinter(printerId, tierId);
+      fetchTiers();
+    } catch (err) {
+      setTierError(err.response?.data?.error || "Failed to unassign printer");
     }
   };
 
@@ -452,58 +460,91 @@ export default function AdminShop() {
         {error && <div className="alert alert-error">{error}</div>}
       </div>
 
+      {/* ── Capability tiers: pricing + printer assignment + availability ── */}
+      <div className="card card-padded" style={{ marginBottom: "20px" }}>
+        <div className="form-label">capability tiers &amp; pricing</div>
+        <div className="mono-sm" style={{ color: "var(--gray)", marginBottom: "12px" }}>
+          students pick a tier, never a device. price is per page and applies to
+          new jobs only (submitted jobs keep their locked price). a tier is
+          orderable only while it has an online assigned printer.
+        </div>
+
+        {tierNotice && <div className="alert alert-success" style={{ marginBottom: 10 }}>{tierNotice}</div>}
+        {tierError && <div className="alert alert-error" style={{ marginBottom: 10 }}>{tierError}</div>}
+
+        {tiers.map((t) => {
+          const assignable = printers.filter(
+            (p) => capabilityOk(t, p) && !t.printers.some((tp) => tp.id === p.id)
+          );
+          const dirty = String(priceDrafts[t.id] ?? "") !== String(t.price_per_page);
+          return (
+            <div key={t.id} style={{ borderTop: "0.5px solid var(--border)", padding: "12px 0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{t.name}</span>
+                  {t.available
+                    ? <span className="badge badge-ready"><span className="badge-dot" />available</span>
+                    : <span className="badge badge-pending"><span className="badge-dot" />unavailable</span>}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span className="mono-sm" style={{ color: "var(--gray)" }}>₹</span>
+                  <input
+                    className="form-input" type="number" min="0" step="0.5"
+                    style={{ width: 90 }}
+                    value={priceDrafts[t.id] ?? ""}
+                    onChange={(e) => setPriceDrafts((d) => ({ ...d, [t.id]: e.target.value }))}
+                  />
+                  <span className="mono-sm" style={{ color: "var(--gray)" }}>/pg</span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    disabled={!dirty}
+                    onClick={() => handleSaveTierPrice(t)}
+                  >
+                    save
+                  </button>
+                </div>
+              </div>
+
+              {/* Assigned printers + assign control (never shown to students) */}
+              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                {t.printers.length === 0 && (
+                  <span className="mono-sm" style={{ color: "var(--rose-dark)" }}>no printers assigned</span>
+                )}
+                {t.printers.map((p) => (
+                  <span key={p.id} className="file-type-tag" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    {p.label} · {p.status.toLowerCase().replaceAll("_", " ")}
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      style={{ padding: "0 2px", lineHeight: 1 }}
+                      title={`Unassign ${p.label} from ${t.name}`}
+                      onClick={() => handleUnassign(p.id, t.id)}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+                {assignable.length > 0 && (
+                  <select
+                    className="file-select"
+                    value=""
+                    onChange={(e) => { if (e.target.value) handleAssign(e.target.value, t.id); }}
+                  >
+                    <option value="">+ assign printer…</option>
+                    {assignable.map((p) => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
       {/* ── Print agent tokens ───────────────────────────────────────────── */}
       <AgentTokensPanel />
-
-      {/* ── Pricing ──────────────────────────────────────────────────────── */}
-      <div className="card card-padded">
-        <div className="form-label">pricing</div>
-        <div className="mono-sm" style={{ color: "var(--gray)", marginBottom: "12px" }}>
-          per-page rates for this shop — changes apply to new jobs only
-          (submitted jobs keep their locked price)
-        </div>
-
-        <div className="form-row-2">
-          <div className="form-group">
-            <label className="form-label">b&amp;w ₹/page</label>
-            <input
-              className="form-input" type="number" min="0" step="0.5"
-              value={pricing.bw}
-              onChange={(e) => setPricing((p) => ({ ...p, bw: e.target.value }))}
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">colour ₹/page</label>
-            <input
-              className="form-input" type="number" min="0" step="0.5"
-              value={pricing.color}
-              onChange={(e) => setPricing((p) => ({ ...p, color: e.target.value }))}
-            />
-          </div>
-        </div>
-        <div className="form-group" style={{ maxWidth: "220px" }}>
-          <label className="form-label">duplex discount %</label>
-          <input
-            className="form-input" type="number" min="0" max="100" step="1"
-            value={pricing.discount}
-            onChange={(e) => setPricing((p) => ({ ...p, discount: e.target.value }))}
-          />
-        </div>
-
-        <div className="btn-row">
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={pricingSaving}
-            onClick={handleSavePricing}
-          >
-            {pricingSaving ? "saving…" : "save pricing"}
-          </button>
-        </div>
-
-        {pricingSaved && <div className="alert alert-success">Pricing updated.</div>}
-        {pricingError && <div className="alert alert-error">{pricingError}</div>}
-      </div>
     </>
   );
 }

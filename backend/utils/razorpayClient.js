@@ -11,4 +11,13 @@ const razorpay = new Razorpay({
   key_secret: config.razorpay.keySecret,
 });
 
+// Thin wrapper over the real Razorpay refund API. The SDK (v2.9.x) exposes no
+// per-request idempotency header, so double-refund safety is NOT provided here
+// — it is guaranteed by the caller's DB transaction + row lock + state guard
+// (a job already REFUNDED never reaches this call). amountPaise is refunded
+// against the original payment. Throws on API failure so the caller rolls back.
+export async function refundPayment(paymentId, amountPaise) {
+  return razorpay.payments.refund(paymentId, { amount: amountPaise, speed: "normal" });
+}
+
 export default razorpay;

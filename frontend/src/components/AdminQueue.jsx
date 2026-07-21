@@ -1,7 +1,7 @@
 // frontend/src/components/AdminQueue.jsx
 import { useEffect, useState } from "react";
 import adminJobs from "../services/adminJobs";
-import printersService from "../services/printers";
+import tiersService from "../services/tiers";
 import AdminJobRow from "./AdminJobRow";
 
 const STATUSES = ["ALL", "PENDING", "QUEUED", "WAITING_FOR_PRINTER", "PRINTING", "READY", "COLLECTED"];
@@ -19,7 +19,7 @@ export default function AdminQueue() {
   const [jobs, setJobs]                 = useState([]);
   const [filterStatus, setFilterStatus] = useState("ALL");
   const [search, setSearch]             = useState("");
-  const [printers, setPrinters]         = useState([]); // for the reassign dropdown on blocked jobs
+  const [tiers, setTiers]               = useState([]); // target-tier options for the reassign flow
 
   const fetchJobs = () => {
     adminJobs.getAllJobs()
@@ -27,16 +27,16 @@ export default function AdminQueue() {
       .catch(() => {});
   };
 
-  const fetchPrinters = () => {
-    printersService.listPrinters()
-      .then((res) => setPrinters(res.data.printers || []))
+  const fetchTiers = () => {
+    tiersService.getAdminTiers()
+      .then((res) => setTiers(res.data.tiers || []))
       .catch(() => {});
   };
 
   useEffect(() => {
     fetchJobs();
-    fetchPrinters();
-    const interval = setInterval(fetchJobs, 5000); // poll every 5s so admin sees live updates
+    fetchTiers();
+    const interval = setInterval(() => { fetchJobs(); fetchTiers(); }, 5000); // live availability too
     return () => clearInterval(interval);
   }, []);
 
@@ -121,7 +121,7 @@ export default function AdminQueue() {
             </thead>
             <tbody>
               {filtered.map((job) => (
-                <AdminJobRow key={job.id} job={job} printers={printers} onUpdate={fetchJobs} />
+                <AdminJobRow key={job.id} job={job} tiers={tiers} onUpdate={fetchJobs} />
               ))}
             </tbody>
           </table>
